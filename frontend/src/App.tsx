@@ -250,6 +250,26 @@ export default function App() {
     }
   };
 
+  // Interactive Unit Card Click Handler: Recall or Dispatch to selectedRoute
+  const handleUnitClick = (unit: { unitId: string; routeId: string | null }) => {
+    const baseMap = { ...(manualAlloc !== null ? manualAlloc : (data?.recommendation || {})) };
+    if (unit.routeId) {
+      // Unit is currently assigned -> Recall to depot (decrement its route)
+      const targetRoute = unit.routeId;
+      if ((baseMap[targetRoute] || 0) > 0) {
+        baseMap[targetRoute] = Math.max(0, (baseMap[targetRoute] || 0) - 1);
+        setManualAlloc(baseMap);
+      }
+    } else {
+      // Unit is currently on standby in depot -> Dispatch to selectedRoute
+      const currentTotal = Object.values(baseMap).reduce((a, b) => a + b, 0);
+      if (currentTotal < sparePoolSize) {
+        baseMap[selectedRoute] = (baseMap[selectedRoute] || 0) + 1;
+        setManualAlloc(baseMap);
+      }
+    }
+  };
+
   // Build standby unit list for UI badges and dispatch broadcast
   const unitAssignments: { unitId: string; routeId: string | null }[] = [];
   const routeAssignmentQueue: string[] = [];
@@ -662,42 +682,68 @@ export default function App() {
               )}
             </div>
 
-            {/* Individual Spare Fleet Unit Badges */}
+            {/* Individual Spare Fleet Unit Badges (Interactive: Click to Recall or Dispatch) */}
             <div className="pt-2 border-t border-slate-800/80">
-              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
-                <span className="flex items-center gap-1.5">
+              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-1.5 mb-2.5">
+                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                   <Bus className="w-3.5 h-3.5 text-purple-400" />
                   Standby Fleet Units Status ({unitAssignments.filter((u) => u.routeId).length} Dispatched / {unitAssignments.length} Pool Size):
                 </span>
-                <span className="text-slate-500 font-mono text-[10px]">Depot Base: Central Maintenance</span>
+                <span className="text-[11px] text-cyan-400/90 font-medium">
+                  💡 Click assigned unit to recall to depot · Click standby unit to dispatch to {selectedRoute}
+                </span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
                 {unitAssignments.map((u) => {
                   const isAssigned = u.routeId !== null;
+                  const tooltipText = isAssigned
+                    ? `Click to recall ${u.unitId} from ${u.routeId} back to depot`
+                    : totalDispatched >= sparePoolSize
+                    ? `Spare pool exhausted (${sparePoolSize}/${sparePoolSize} units dispatched)`
+                    : `Click to dispatch ${u.unitId} to selected route (${selectedRoute})`;
+
                   return (
                     <div
                       key={u.unitId}
-                      className={`p-2.5 rounded-xl border text-xs flex flex-col justify-between transition ${
+                      onClick={() => handleUnitClick(u)}
+                      title={tooltipText}
+                      className={`p-2.5 rounded-xl border text-xs flex flex-col justify-between transition cursor-pointer select-none group relative active:scale-95 ${
                         isAssigned
-                          ? 'bg-blue-950/50 border-blue-500/50 text-blue-200 shadow-md'
-                          : 'bg-slate-950/70 border-slate-800 text-slate-400'
+                          ? 'bg-blue-950/50 border-blue-500/50 hover:border-red-400 hover:bg-red-950/30 text-blue-200 shadow-md ring-0 hover:ring-1 hover:ring-red-400/30'
+                          : 'bg-slate-950/70 border-slate-800 hover:border-emerald-500/70 hover:bg-emerald-950/30 text-slate-400 ring-0 hover:ring-1 hover:ring-emerald-500/30'
                       }`}
                     >
                       <div className="flex justify-between items-center mb-1">
-                        <span className="font-mono font-bold text-white text-[11px]">{u.unitId}</span>
+                        <span className="font-mono font-bold text-white text-[11px] group-hover:text-cyan-300 transition">
+                          {u.unitId}
+                        </span>
                         <span
-                          className={`w-2 h-2 rounded-full ${
-                            isAssigned ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
+                          className={`w-2 h-2 rounded-full transition ${
+                            isAssigned
+                              ? 'bg-emerald-400 animate-pulse group-hover:bg-red-400'
+                              : 'bg-slate-600 group-hover:bg-emerald-400'
                           }`}
                         ></span>
                       </div>
                       <div className="font-semibold text-[11px]">
                         {isAssigned ? (
-                          <span className="text-emerald-300 font-bold font-mono">
-                            [ASSIGNED → {u.routeId}]
-                          </span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-emerald-300 font-bold font-mono group-hover:text-red-300 transition">
+                              [ASSIGNED → {u.routeId}]
+                            </span>
+                            <span className="text-[10px] opacity-0 group-hover:opacity-100 font-sans font-bold text-red-400 transition ml-1">
+                              Recall
+                            </span>
+                          </div>
                         ) : (
-                          <span className="text-slate-500 font-mono">[STANDBY IN DEPOT]</span>
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-500 font-mono group-hover:text-emerald-300 transition">
+                              [STANDBY IN DEPOT]
+                            </span>
+                            <span className="text-[10px] opacity-0 group-hover:opacity-100 font-sans font-bold text-emerald-400 transition ml-1">
+                              +Dispatch
+                            </span>
+                          </div>
                         )}
                       </div>
                     </div>
