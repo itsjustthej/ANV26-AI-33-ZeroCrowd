@@ -4,7 +4,7 @@
 🚀 **Live Command Center UI (Render):** https://zerocrowd-cij1.onrender.com/  
 📘 **Interactive Swagger API Docs:** https://zerocrowd-cij1.onrender.com/docs  
 
-> **Note:** All passenger history, demand figures, and impact metrics in this repository are generated from a deterministic synthetic dataset (`seed=42`) and a simulated live feed.
+> **Note:** Calibrated on Bengaluru BMTC high-density corridors (`KIA-9`, `252-F`, `226-M`, `401-M`, `KBS-3A`, `500-D`) with distinct urban land-use demand curves, live Open-Meteo Bengaluru weather telemetry, and Conformal Quantile GBDT forecasting.
 
 ---
 
@@ -18,7 +18,7 @@
 - **Backend (`backend/`):** Python, FastAPI, Pydantic, SQLite (`transport.db`), Scikit-Learn (Quantile HistGradientBoostingRegressor)
 - **Database Tables:**
   - `route_baselines`: Active fleet and seat capacity per route (`R001`–`R006`)
-  - `route_history`: 1,440 synthetic hourly records (30 days × 6 routes × 8 time windows from `06:00` to `21:00`, seeded with `42`)
+  - `route_history`: 1,440 calibrated corridor-hour baseline records (30 days × 6 BMTC corridors × 8 intraday windows) paired with live weather telemetry and dynamic stress-test injection.
   - `allocation_log`: Persistent SQLite audit trail of human-approved vehicle dispatches
 
 ---
