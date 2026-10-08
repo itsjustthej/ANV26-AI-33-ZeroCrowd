@@ -10,8 +10,10 @@ import {
   Layers,
   Pause,
   Play,
+  Radio,
   RotateCcw,
   ShieldAlert,
+  Sliders,
   Sparkles,
   TrendingUp,
   Wrench,
@@ -52,6 +54,7 @@ interface RouteData {
   excess: number;
   why: string;
   recommended_extra?: number;
+  manual_extra?: number | null;
 }
 
 interface SummaryMetrics {
@@ -69,11 +72,13 @@ interface AnalyzeResponse {
   capacity_loss: boolean;
   hour: string;
   applied: boolean;
+  is_manual?: boolean;
   spare_vehicles: number;
   spare_used: number;
   spare_left: number;
   routes: RouteData[];
   recommendation: Record<string, number>;
+  active_alloc?: Record<string, number>;
   before: SummaryMetrics;
   after: SummaryMetrics;
   reduction_pct: number;
@@ -120,6 +125,9 @@ export default function App() {
   const [tickStep, setTickStep] = useState(0);
   const [activeChartTab, setActiveChartTab] = useState<'intraday' | 'history'>('intraday');
 
+  // Human intervention override state: null = AI recommendation active
+  const [manualAlloc, setManualAlloc] = useState<Record<string, number> | null>(null);
+
   const [data, setData] = useState<AnalyzeResponse | null>(null);
   const [intraday, setIntraday] = useState<any[]>([]);
   const [historyData, setHistoryData] = useState<any[]>([]);
@@ -142,13 +150,18 @@ export default function App() {
             spare,
             apply: applied,
             tick_step: liveMode ? currTick : 0,
+            manual_alloc: manualAlloc,
           }),
         }),
         fetch(
-          `${API_BASE}/api/intraday/${selectedRoute}?spike=${spike}&capacity_loss=${capacityLoss}&apply=${applied}&spare=${spare}`
+          `${API_BASE}/api/intraday/${selectedRoute}?spike=${spike}&capacity_loss=${capacityLoss}&apply=${applied}&spare=${spare}&tick_step=${
+            liveMode ? currTick : 0
+          }`
         ),
         fetch(
-          `${API_BASE}/api/history/${selectedRoute}?hour=${hour}&spike=${spike}&capacity_loss=${capacityLoss}&apply=${applied}&spare=${spare}`
+          `${API_BASE}/api/history/${selectedRoute}?hour=${hour}&spike=${spike}&capacity_loss=${capacityLoss}&apply=${applied}&spare=${spare}&tick_step=${
+            liveMode ? currTick : 0
+          }`
         ),
         fetch(`${API_BASE}/api/backtest?hour=${hour}`),
         fetch(`${API_BASE}/api/log`),
@@ -187,7 +200,7 @@ export default function App() {
 
   useEffect(() => {
     fetchAll(liveMode ? tickStep : 0);
-  }, [hour, spike, capacityLoss, applied, selectedRoute, spare, liveMode, tickStep]);
+  }, [hour, spike, capacityLoss, applied, selectedRoute, spare, liveMode, tickStep, manualAlloc]);
 
   // Live Simulation 2-second tick loop
   useEffect(() => {
@@ -204,6 +217,7 @@ export default function App() {
     setApplied(false);
     setLiveMode(false);
     setTickStep(0);
+    setManualAlloc(null);
     try {
       await fetch(`${API_BASE}/api/reset`, { method: 'POST' });
       const resLog = await fetch(`${API_BASE}/api/log`);
@@ -213,18 +227,72 @@ export default function App() {
     }
   };
 
+  // Determine current active allocation map
+  const activeAllocMap = manualAlloc !== null ? manualAlloc : (data?.recommendation || {});
+  const totalDispatched = Object.values(activeAllocMap).reduce((a, b) => a + b, 0);
+  const sparePoolSize = data?.spare_vehicles || spare;
+
+  // Stepper handlers
+  const handleIncrement = (routeId: string) => {
+    const baseMap = { ...(manualAlloc !== null ? manualAlloc : (data?.recommendation || {})) };
+    const currentTotal = Object.values(baseMap).reduce((a, b) => a + b, 0);
+    if (currentTotal < sparePoolSize) {
+      baseMap[routeId] = (baseMap[routeId] || 0) + 1;
+      setManualAlloc(baseMap);
+    }
+  };
+
+  const handleDecrement = (routeId: string) => {
+    const baseMap = { ...(manualAlloc !== null ? manualAlloc : (data?.recommendation || {})) };
+    if ((baseMap[routeId] || 0) > 0) {
+      baseMap[routeId] = Math.max(0, (baseMap[routeId] || 0) - 1);
+      setManualAlloc(baseMap);
+    }
+  };
+
+  // Build standby unit list for UI badges and dispatch broadcast
+  const unitAssignments: { unitId: string; routeId: string | null }[] = [];
+  const routeAssignmentQueue: string[] = [];
+  if (data?.routes) {
+    for (const r of data.routes) {
+      const extraCount = activeAllocMap[r.id] || 0;
+      for (let i = 0; i < extraCount; i++) {
+        routeAssignmentQueue.push(r.id);
+      }
+    }
+  }
+
+  for (let i = 1; i <= sparePoolSize; i++) {
+    const unitId = `UNIT-${100 + i}`;
+    const assignedRoute = routeAssignmentQueue[i - 1] || null;
+    unitAssignments.push({ unitId, routeId: assignedRoute });
+  }
+
+  // Group dispatched units by route for broadcast banner
+  const dispatchedByRoute: Record<string, string[]> = {};
+  for (const u of unitAssignments) {
+    if (u.routeId) {
+      if (!dispatchedByRoute[u.routeId]) dispatchedByRoute[u.routeId] = [];
+      dispatchedByRoute[u.routeId].push(u.unitId);
+    }
+  }
+  const broadcastString = Object.entries(dispatchedByRoute)
+    .map(([rId, units]) => `[${units.join(', ')}] -> Rerouted to ${rId}`)
+    .join(' | ');
+
   if (loading && !data) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col items-center justify-center font-sans space-y-4">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
         <p className="text-sm font-semibold tracking-wide text-slate-400">
-          Initializing AI-16 Decision-Support Engine &amp; SQLite History...
+          Initializing ZeroCrowd Decision-Support Engine &amp; SQLite History...
         </p>
       </div>
     );
   }
 
   const recEntries = Object.entries(data?.recommendation || {}) as [string, number][];
+  const activeEntries = Object.entries(activeAllocMap).filter(([_, v]) => v > 0) as [string, number][];
   const selectedRouteObj = data?.routes.find((r) => r.id === selectedRoute) || data?.routes[0];
 
   return (
@@ -298,7 +366,10 @@ export default function App() {
               <span className="text-slate-400 mr-1.5 font-medium">Spares:</span>
               <select
                 value={spare}
-                onChange={(e) => setSpare(Number(e.target.value))}
+                onChange={(e) => {
+                  setSpare(Number(e.target.value));
+                  setManualAlloc(null);
+                }}
                 className="bg-transparent text-purple-400 font-bold focus:outline-none cursor-pointer"
               >
                 {[3, 4, 5, 6, 8, 10].map((s) => (
@@ -358,18 +429,18 @@ export default function App() {
             <button
               onClick={handleReset}
               className="px-3 py-2 bg-slate-950/90 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl text-xs font-bold border border-slate-800 transition flex items-center gap-1.5"
-              title="Reset all toggles and audit log"
+              title="Reset all toggles, overrides, and audit log"
             >
               <RotateCcw className="w-3.5 h-3.5" /> Reset
             </button>
           </div>
         </header>
 
-        {/* 4 KPI Summary Cards */}
+        {/* 4 KPI Summary Cards (Padding fixed to p-5 to prevent left text clipping) */}
         {data && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4.5 shadow-lg relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-xl group-hover:bg-blue-500/10 transition"></div>
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg relative group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-blue-500/5 rounded-full blur-xl group-hover:bg-blue-500/10 transition pointer-events-none"></div>
               <div className="flex justify-between items-center text-xs text-slate-400 uppercase tracking-wider font-semibold">
                 <span>Active Network</span>
                 <Layers className="w-4 h-4 text-blue-400" />
@@ -385,8 +456,8 @@ export default function App() {
               </p>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4.5 shadow-lg relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl group-hover:bg-emerald-500/10 transition"></div>
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg relative group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl group-hover:bg-emerald-500/10 transition pointer-events-none"></div>
               <div className="flex justify-between items-center text-xs text-slate-400 uppercase tracking-wider font-semibold">
                 <span>Total Predicted Demand</span>
                 <TrendingUp className="w-4 h-4 text-emerald-400" />
@@ -402,8 +473,8 @@ export default function App() {
               </p>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4.5 shadow-lg relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-xl group-hover:bg-red-500/10 transition"></div>
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg relative group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-xl group-hover:bg-red-500/10 transition pointer-events-none"></div>
               <div className="flex justify-between items-center text-xs text-slate-400 uppercase tracking-wider font-semibold">
                 <span>Overcrowded / Critical</span>
                 <AlertTriangle className="w-4 h-4 text-red-400" />
@@ -430,8 +501,8 @@ export default function App() {
               </p>
             </div>
 
-            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4.5 shadow-lg relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-xl group-hover:bg-purple-500/10 transition"></div>
+            <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-lg relative group">
+              <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-xl group-hover:bg-purple-500/10 transition pointer-events-none"></div>
               <div className="flex justify-between items-center text-xs text-slate-400 uppercase tracking-wider font-semibold">
                 <span>Spare Fleet Pool</span>
                 <Bus className="w-4 h-4 text-purple-400" />
@@ -453,7 +524,7 @@ export default function App() {
 
         {/* Dynamic Alert Banner when Spike or Capacity Loss is active */}
         {data && (spike || capacityLoss) && !applied && (
-          <div className="bg-gradient-to-r from-red-950/60 to-slate-900 border border-red-700/80 rounded-2xl p-4.5 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div className="bg-gradient-to-r from-red-950/60 to-slate-900 border border-red-700/80 rounded-2xl p-5 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-start gap-3.5">
               <div className="p-2 bg-red-600/20 text-red-400 rounded-xl border border-red-500/30 shrink-0 mt-0.5">
                 <ShieldAlert className="w-5 h-5" />
@@ -469,9 +540,11 @@ export default function App() {
                 </div>
                 <p className="text-xs text-red-300/90 mt-1">
                   <strong>{data.before.passengers_affected} passengers</strong> exceed vehicle capacity across{' '}
-                  <strong>{data.before.overcrowded_routes} route(s)</strong>. Greedy fairness optimizer recommends:{' '}
+                  <strong>{data.before.overcrowded_routes} route(s)</strong>. Current dispatch plan:{' '}
                   <span className="text-amber-300 font-bold">
-                    {recEntries.map(([k, v]) => `${k} (+${v} buses)`).join(', ') || 'No allocation feasible'}
+                    {activeEntries.map(([k, v]) => `${k} (+${v} buses)`).join(', ') ||
+                      recEntries.map(([k, v]) => `${k} (+${v} buses)`).join(', ') ||
+                      'No allocation feasible'}
                   </span>
                   .
                 </p>
@@ -481,12 +554,45 @@ export default function App() {
               onClick={() => setApplied(true)}
               className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-extrabold shadow-lg shadow-red-600/30 whitespace-nowrap transition active:scale-95 flex items-center gap-1.5"
             >
-              <Sparkles className="w-4 h-4" /> APPLY AI ALLOCATION
+              <Sparkles className="w-4 h-4" /> APPLY ALLOCATION DISPATCH
             </button>
           </div>
         )}
 
-        {/* Applied Allocation Banner */}
+        {/* NEARBY STANDBY VEHICLE DISPATCH NOTIFICATION BROADCAST BANNER */}
+        {data && applied && totalDispatched > 0 && (
+          <div className="bg-gradient-to-r from-blue-950/70 via-indigo-950/60 to-slate-900 border border-blue-500/60 rounded-2xl p-4.5 shadow-2xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div className="flex items-start gap-3.5">
+              <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-xl border border-blue-500/40 shrink-0 mt-0.5">
+                <Radio className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-widest bg-blue-500/20 text-blue-300 rounded border border-blue-500/40">
+                    LIVE STANDBY DISPATCH BROADCAST
+                  </span>
+                  <span className="text-xs text-slate-400 font-mono">Telemetry Active</span>
+                </div>
+                <p className="text-sm font-semibold text-white mt-1">
+                  📡 Dispatch Notification Sent to Nearby Standby Units:{' '}
+                  <span className="text-cyan-300 font-mono font-bold">
+                    {broadcastString || 'Standby Pool'}
+                  </span>
+                </p>
+                <p className="text-xs text-slate-300/80 mt-0.5">
+                  Standby bus drivers confirmed receipt via operational radio · Rerouting initiated immediately.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-3 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                BROADCAST COMMITTED
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Applied Allocation Status Banner */}
         {data && applied && (
           <div className="bg-gradient-to-r from-emerald-950/50 to-slate-900 border border-emerald-700/80 rounded-2xl p-4.5 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-start gap-3.5">
@@ -495,7 +601,7 @@ export default function App() {
               </div>
               <div>
                 <h3 className="text-sm font-bold text-emerald-200">
-                  AI Allocation Committed ({data.spare_used} of {data.spare_vehicles} Spare Vehicles Dispatched)
+                  {manualAlloc !== null ? 'Human-Overridden' : 'AI-Optimized'} Allocation Committed ({data.spare_used} of {data.spare_vehicles} Spare Vehicles Dispatched)
                 </h3>
                 <p className="text-xs text-emerald-300/90 mt-1">
                   Excess unserved passengers reduced by <strong>{data.reduction_pct}%</strong> (
@@ -513,7 +619,96 @@ export default function App() {
           </div>
         )}
 
-        {/* Route Monitor Table */}
+        {/* ADMIN DISPATCH & HUMAN-IN-THE-LOOP CONSOLE BLOCK */}
+        {data && (
+          <div className="bg-slate-900/85 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-purple-600/20 text-purple-400 rounded-xl border border-purple-500/30">
+                  <Sliders className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2.5">
+                    <h3 className="text-base font-bold text-white">
+                      Admin Dispatch &amp; Human-in-the-Loop Console
+                    </h3>
+                    {/* Control Mode Badge */}
+                    {manualAlloc !== null ? (
+                      <span className="px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full flex items-center gap-1.5 shadow-sm">
+                        <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                        Human Override Active
+                      </span>
+                    ) : (
+                      <span className="px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 rounded-full flex items-center gap-1.5 shadow-sm">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                        AI Optimal Recommendation
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Operator authority console: review automated AI fleet recommendations or fine-tune route dispatches via the steppers.
+                  </p>
+                </div>
+              </div>
+
+              {/* Restore AI Recommendation Button */}
+              {manualAlloc !== null && (
+                <button
+                  onClick={() => setManualAlloc(null)}
+                  className="px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-amber-300 hover:text-white rounded-xl text-xs font-bold border border-amber-500/40 transition flex items-center gap-1.5 shadow-md active:scale-95"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" /> Restore AI Recommendation
+                </button>
+              )}
+            </div>
+
+            {/* Individual Spare Fleet Unit Badges */}
+            <div className="pt-2 border-t border-slate-800/80">
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Bus className="w-3.5 h-3.5 text-purple-400" />
+                  Standby Fleet Units Status ({unitAssignments.filter((u) => u.routeId).length} Dispatched / {unitAssignments.length} Pool Size):
+                </span>
+                <span className="text-slate-500 font-mono text-[10px]">Depot Base: Central Maintenance</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5">
+                {unitAssignments.map((u) => {
+                  const isAssigned = u.routeId !== null;
+                  return (
+                    <div
+                      key={u.unitId}
+                      className={`p-2.5 rounded-xl border text-xs flex flex-col justify-between transition ${
+                        isAssigned
+                          ? 'bg-blue-950/50 border-blue-500/50 text-blue-200 shadow-md'
+                          : 'bg-slate-950/70 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div className="flex justify-between items-center mb-1">
+                        <span className="font-mono font-bold text-white text-[11px]">{u.unitId}</span>
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            isAssigned ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
+                          }`}
+                        ></span>
+                      </div>
+                      <div className="font-semibold text-[11px]">
+                        {isAssigned ? (
+                          <span className="text-emerald-300 font-bold font-mono">
+                            [ASSIGNED → {u.routeId}]
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 font-mono">[STANDBY IN DEPOT]</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Route Monitor Table with [-] / [+] Steppers */}
         {data && (
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl">
             <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 mb-4">
@@ -521,7 +716,7 @@ export default function App() {
                 <h2 className="text-base font-bold text-white flex items-center gap-2">
                   <span>Route Risk &amp; Probabilistic Forecast Monitor</span>
                   <span className="text-xs font-normal text-slate-400">
-                    (Click any row to inspect 8-window curve or 30-day timeline)
+                    (Use [-] / [+] to manually adjust dispatched buses)
                   </span>
                 </h2>
               </div>
@@ -538,7 +733,7 @@ export default function App() {
                     <th className="pb-3 pl-3">Route</th>
                     <th className="pb-3">Condition</th>
                     <th className="pb-3">Forecast (90% Interval)</th>
-                    <th className="pb-3">Fleet / Capacity</th>
+                    <th className="pb-3">Fleet / Capacity &amp; Override</th>
                     <th className="pb-3 w-40">Utilization</th>
                     <th className="pb-3">P(Overcrowded)</th>
                     <th className="pb-3">Risk Tier</th>
@@ -548,6 +743,11 @@ export default function App() {
                 <tbody className="divide-y divide-slate-800/60 font-normal">
                   {data.routes.map((r) => {
                     const isSelected = selectedRoute === r.id;
+                    const currentExtra =
+                      manualAlloc !== null
+                        ? manualAlloc[r.id] || 0
+                        : data.recommendation?.[r.id] || 0;
+
                     const badge =
                       r.risk === 'CRITICAL'
                         ? 'bg-red-500/20 text-red-400 border-red-500/40'
@@ -602,14 +802,58 @@ export default function App() {
                             [{r.lower} – {r.upper}]
                           </span>
                         </td>
+
+                        {/* FLEET / CAPACITY COLUMN WITH [-] / [+] STEPPER BUTTONS */}
                         <td className="py-3.5 text-slate-300">
-                          {r.vehicles} buses ({r.capacity} seats)
-                          {r.extra > 0 && (
-                            <span className="ml-2 px-2 py-0.5 bg-blue-600 text-white rounded-full font-bold text-[11px] shadow-sm">
-                              +{r.extra}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-3">
+                            <div>
+                              <span className="font-semibold text-white">{r.vehicles}</span> buses
+                              <span className="text-slate-400 text-[11px] block">{r.capacity} seats</span>
+                            </div>
+
+                            {/* Compact Stepper */}
+                            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDecrement(r.id);
+                                }}
+                                disabled={currentExtra <= 0}
+                                className={`w-5 h-5 rounded flex items-center justify-center font-bold text-xs transition ${
+                                  currentExtra <= 0
+                                    ? 'text-slate-600 cursor-not-allowed'
+                                    : 'text-amber-400 hover:bg-slate-800 active:scale-95'
+                                }`}
+                                title="Decrease allocated buses for this route"
+                              >
+                                -
+                              </button>
+                              <span
+                                className={`px-2 min-w-[24px] text-center font-bold font-mono text-xs ${
+                                  currentExtra > 0 ? 'text-blue-400' : 'text-slate-500'
+                                }`}
+                              >
+                                +{currentExtra}
+                              </span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleIncrement(r.id);
+                                }}
+                                disabled={totalDispatched >= sparePoolSize}
+                                className={`w-5 h-5 rounded flex items-center justify-center font-bold text-xs transition ${
+                                  totalDispatched >= sparePoolSize
+                                    ? 'text-slate-600 cursor-not-allowed'
+                                    : 'text-emerald-400 hover:bg-slate-800 active:scale-95'
+                                }`}
+                                title="Increase allocated buses for this route"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
                         </td>
+
                         <td className="py-3.5">
                           <div className="flex items-center gap-2">
                             <span className="font-mono font-bold w-12 text-right">
@@ -647,7 +891,7 @@ export default function App() {
 
         {/* Charts & Before/After Panel Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Recharts Analytics Panel with Tab 1 and Tab 2 */}
+          {/* Recharts Analytics Panel with Tab 1 and Tab 2 (isAnimationActive={false} for smooth live tick updates) */}
           <div className="lg:col-span-2 bg-slate-900/80 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col justify-between">
             <div>
               <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 mb-4">
@@ -716,6 +960,7 @@ export default function App() {
                         fillOpacity={0.12}
                         stroke="#60a5fa"
                         strokeDasharray="4 4"
+                        isAnimationActive={false}
                       />
                       <Line
                         type="monotone"
@@ -725,6 +970,7 @@ export default function App() {
                         strokeWidth={2.5}
                         dot={{ r: 4, fill: '#0284c7' }}
                         activeDot={{ r: 6 }}
+                        isAnimationActive={false}
                       />
                       <Line
                         type="stepAfter"
@@ -733,6 +979,7 @@ export default function App() {
                         stroke="#10b981"
                         strokeWidth={2.2}
                         dot={false}
+                        isAnimationActive={false}
                       />
                       <Line
                         type="monotone"
@@ -742,6 +989,7 @@ export default function App() {
                         strokeWidth={1.5}
                         strokeDasharray="2 2"
                         dot={false}
+                        isAnimationActive={false}
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -790,6 +1038,7 @@ export default function App() {
                         stroke="#60a5fa"
                         strokeWidth={2}
                         dot={{ r: 3, fill: '#3b82f6' }}
+                        isAnimationActive={false}
                       />
                       <Line
                         type="monotone"
@@ -799,6 +1048,7 @@ export default function App() {
                         strokeWidth={1.5}
                         strokeDasharray="3 3"
                         dot={false}
+                        isAnimationActive={false}
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
@@ -896,20 +1146,20 @@ export default function App() {
               {/* Action Button */}
               <button
                 onClick={() => setApplied(!applied)}
-                disabled={recEntries.length === 0}
+                disabled={totalDispatched === 0 && recEntries.length === 0}
                 className={`mt-4 w-full py-3 rounded-xl text-xs font-black uppercase tracking-wider transition ${
-                  recEntries.length === 0
+                  totalDispatched === 0 && recEntries.length === 0
                     ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
                     : applied
                     ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
                     : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-lg shadow-blue-600/30 active:scale-95'
                 }`}
               >
-                {recEntries.length === 0
+                {totalDispatched === 0 && recEntries.length === 0
                   ? 'No Dispatch Intervention Needed'
                   : applied
                   ? 'Allocation Committed · Click to Preview Pre-State'
-                  : `Commit AI Dispatch (+${data.spare_used} Vehicles)`}
+                  : `Commit Allocation (+${totalDispatched || data.spare_used} Vehicles)`}
               </button>
             </div>
           )}
@@ -979,7 +1229,7 @@ export default function App() {
 
               {logs.length === 0 ? (
                 <div className="text-xs text-slate-500 py-10 text-center border border-dashed border-slate-800 rounded-xl">
-                  No allocations committed yet. Activate Spike or Capacity Loss and click &quot;Apply AI Allocation&quot;.
+                  No allocations committed yet. Activate Spike or Capacity Loss and click &quot;Apply Allocation Dispatch&quot;.
                 </div>
               ) : (
                 <div className="space-y-2 max-h-56 overflow-y-auto pr-1">

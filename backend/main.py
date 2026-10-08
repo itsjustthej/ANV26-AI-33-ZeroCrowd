@@ -255,7 +255,13 @@ def build_forecasts(hour: str, spike: bool, capacity_loss: bool, tick_step: int 
     return routes
 
 
-def assess_route(r: dict, extra: int = 0, priority_score: float = 0.0, before_util: Optional[float] = None):
+def assess_route(
+    r: dict,
+    extra: int = 0,
+    priority_score: float = 0.0,
+    before_util: Optional[float] = None,
+    is_manual: bool = False,
+):
     eff_vehicles = r["vehicles"] + extra
     cap = eff_vehicles * r["bus_cap"]
     pred = max(r["pred"], 1.0)
@@ -267,7 +273,12 @@ def assess_route(r: dict, extra: int = 0, priority_score: float = 0.0, before_ut
     risk = classify_risk(util)
 
     if extra > 0 and before_util is not None:
-        why = f"+{extra} vehicle(s): {before_util:.1f}% → {util:.1f}% utilization (priority {priority_score:.2f})"
+        if is_manual:
+            why = f"+{extra} vehicle(s) [HUMAN OVERRIDE]: {before_util:.1f}% -> {util:.1f}% utilization"
+        else:
+            why = f"+{extra} vehicle(s): {before_util:.1f}% -> {util:.1f}% utilization (priority {priority_score:.2f})"
+    elif is_manual and extra == 0 and before_util is not None and before_util > 100.0:
+        why = f"0 vehicles assigned [HUMAN OVERRIDE]: {util:.1f}% utilization remaining"
     elif util > 100.0 or prob >= 0.50:
         why = f"Eligible ({util:.1f}% util, {round(prob * 100)}% overflow risk) — spare pool exhausted"
     else:
@@ -352,6 +363,7 @@ class AnalyzeReq(BaseModel):
     spare: int = 5
     apply: bool = False
     tick_step: int = 0
+    manual_alloc: Optional[Dict[str, int]] = None
 
 
 @app.post("/api/analyze")
@@ -360,16 +372,41 @@ def analyze(req: AnalyzeReq):
     routes = build_forecasts(hour, req.spike, req.capacity_loss, req.tick_step)
     rec, scores = allocate_vehicles(routes, req.spare)
 
+    is_manual = req.manual_alloc is not None
+    active_alloc = {}
+    if is_manual:
+        curr_total = 0
+        for r in routes:
+            rid = r["route_id"]
+            req_val = max(0, req.manual_alloc.get(rid, 0))
+            assign = min(req_val, max(0, req.spare - curr_total))
+            active_alloc[rid] = assign
+            curr_total += assign
+    else:
+        active_alloc = rec
+
     before_rows = [assess_route(r, 0) for r in routes]
     before_map = {r["id"]: r["utilization"] for r in before_rows}
 
     after_rows = [
-        assess_route(r, rec[r["route_id"]], scores[r["route_id"]], before_map[r["route_id"]])
+        assess_route(
+            r,
+            active_alloc.get(r["route_id"], 0),
+            scores[r["route_id"]],
+            before_map[r["route_id"]],
+            is_manual=is_manual,
+        )
         for r in routes
     ]
 
     display_rows = after_rows if req.apply else [
-        {**b, "why": a["why"], "recommended_extra": rec[b["id"]]}
+        {
+            **b,
+            "why": a["why"],
+            "recommended_extra": rec[b["id"]],
+            "manual_extra": active_alloc.get(b["id"], 0) if is_manual else None,
+            "extra": active_alloc.get(b["id"], 0) if is_manual else 0,
+        }
         for b, a in zip(before_rows, after_rows)
     ]
 
@@ -384,25 +421,27 @@ def analyze(req: AnalyzeReq):
         [s for s, active in [("spike", req.spike), ("capacity_loss", req.capacity_loss)] if active]
     ) or "normal"
 
-    if req.apply and sum(rec.values()) > 0:
+    if req.apply and sum(active_alloc.values()) > 0:
         conn = get_db()
         cur = conn.cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prefix = "[HUMAN_OVERRIDE]" if is_manual else "[AI_DISPATCH]"
         for a in after_rows:
             if a["extra"] > 0:
                 cur.execute(
-                    """SELECT id, vehicles_added FROM allocation_log
+                    """SELECT id, vehicles_added, reason FROM allocation_log
                        WHERE scenario = ? AND hour = ? AND route_id = ?
                        ORDER BY id DESC LIMIT 1""",
                     (scenario_label, hour, a["id"]),
                 )
                 last_row = cur.fetchone()
-                if not last_row or last_row[1] != a["extra"]:
+                reason_str = f"{prefix} {a['why']}"
+                if not last_row or last_row[1] != a["extra"] or not (last_row[2] and last_row[2].startswith(prefix)):
                     cur.execute(
                         """INSERT INTO allocation_log
                            (ts, scenario, hour, route_id, vehicles_added, util_before, util_after, reason)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (ts, scenario_label, hour, a["id"], a["extra"], before_map[a["id"]], a["utilization"], a["why"]),
+                        (ts, scenario_label, hour, a["id"], a["extra"], before_map[a["id"]], a["utilization"], reason_str),
                     )
         conn.commit()
         conn.close()
@@ -413,11 +452,13 @@ def analyze(req: AnalyzeReq):
         "capacity_loss": req.capacity_loss,
         "hour": hour,
         "applied": req.apply,
+        "is_manual": is_manual,
         "spare_vehicles": req.spare,
-        "spare_used": sum(rec.values()),
-        "spare_left": req.spare - (sum(rec.values()) if req.apply else 0),
+        "spare_used": sum(active_alloc.values()),
+        "spare_left": req.spare - (sum(active_alloc.values()) if req.apply else 0),
         "routes": display_rows,
         "recommendation": {k: v for k, v in rec.items() if v > 0},
+        "active_alloc": {k: v for k, v in active_alloc.items() if v > 0},
         "before": before_summary,
         "after": after_summary,
         "reduction_pct": reduction_pct,
@@ -433,10 +474,11 @@ def get_intraday_profile(
     capacity_loss: bool = Query(False),
     apply: bool = Query(False),
     spare: int = Query(5),
+    tick_step: int = Query(0),
 ):
     profile = []
     for w in WINDOWS:
-        routes = build_forecasts(w, spike, capacity_loss)
+        routes = build_forecasts(w, spike, capacity_loss, tick_step=tick_step)
         rec, scores = allocate_vehicles(routes, spare)
         target = next((r for r in routes if r["route_id"] == route_id), routes[0])
         before_m = assess_route(target, 0)
@@ -468,6 +510,7 @@ def get_route_history(
     capacity_loss: bool = Query(False),
     apply: bool = Query(False),
     spare: int = Query(5),
+    tick_step: int = Query(0),
 ):
     conn = get_db()
     cur = conn.cursor()
@@ -482,7 +525,7 @@ def get_route_history(
     conn.close()
 
     # Also build the 8-window profile for convenient dual consumption
-    profile = get_intraday_profile(route_id, spike, capacity_loss, apply, spare)
+    profile = get_intraday_profile(route_id, spike, capacity_loss, apply, spare, tick_step=tick_step)
 
     return {
         "route_id": route_id,
