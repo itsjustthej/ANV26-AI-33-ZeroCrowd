@@ -3,34 +3,38 @@
 **Full Project Report: Requirements Cross-Check, Architecture, Mathematical Engine, Test Results, and Demo Specification**  
 ANVATION 2026 Hackathon · Prepared October 2026
 
-> **Notice:** All data, demand metrics, and impact indicators in this project are simulated. The historical records are synthetically seeded and the "live" stream is a deterministic simulation. The system is designed as an operational decision-support tool for public transport command centers.
+> **Notice:** All data, demand metrics, and impact indicators in this project are simulated. The historical records are synthetically seeded (`random.Random(42)`) and the "live" stream is a deterministic simulation. The system is designed as an operational decision-support tool for public transport command centers.
 
 ---
 
 ## 1. Executive Summary
 
-**ZeroCrowd** is a decision-support command-center dashboard for urban transit operators. For each route and intraday time window, it forecasts passenger demand with a 90% normal prediction interval, quantifies overcrowding exceedance risk, dynamically flags demand spikes or fleet capacity losses, and dispatches spare vehicles using a multi-objective greedy fairness-aware allocation algorithm.
+**ZeroCrowd** is an automated decision-support command-center dashboard for urban transit operators. For each route and intraday time window, it forecasts passenger demand with a 90% normal prediction interval, quantifies overcrowding exceedance risk, dynamically flags demand spikes or fleet capacity losses, and dispatches spare vehicles using a multi-objective greedy fairness-aware allocation algorithm.
 
 ### Key Capabilities
 - **Deterministic Baseline & Measured Event Uplift:** Calculates clear-day averages and standard deviations, extracting data-driven multipliers for festivals and rainy weather without hardcoded inflation.
 - **90% Normal Prediction Interval:** Measures parameter uncertainty ($\pm 1.645\sigma$) with a statistical variance floor.
 - **Risk Classification & Exceedance Probability:** Computes continuous probability of overcrowding $P(\text{demand} > \text{capacity})$ via the Gaussian error function ($\text{erf}$).
 - **Multi-Objective Fairness Allocator:** Prioritizes vehicles across competing overloaded routes, balancing severity, network demand pressure, and under-service fairness with per-vehicle re-scoring.
-- **Hold-Out Backtest Engine:** Evaluates predictive accuracy (MAE, MAPE %, and 90% interval coverage) across a held-out test split.
-- **SQLite Audit Trail:** Persists all operator-committed dispatches into an immutable log table.
+- **Human-in-the-Loop Override:** Operator steppers (`[-]`/`[+]`) and interactive standby fleet badges (`UNIT-101`–`UNIT-105`) allowing manual intervention with live impact recalculation.
+- **Nearby Vehicle Dispatch Broadcast Telemetry:** Real-time dispatch broadcast banners and audit trail categorization (`[AI_DISPATCH]` vs `[HUMAN_OVERRIDE]`).
+- **Hold-Out Backtest Engine:** Evaluates predictive accuracy (MAE, MAPE %, and 90% interval coverage) across a held-out test split (Days 24–30).
+- **Universal Single-Port Docker & Render Cloud Deployment:** Single container serving both the built React SPA and the FastAPI backend on port `8000`, with automated Render Blueprint (`render.yaml`).
 
 ---
 
 ## 2. System Architecture
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │                    REACT COMMAND-CENTER UI                   │
-│   React 19 + Vite + TypeScript + Tailwind CSS + Recharts    │
+│   React 19 + Vite + TypeScript + Tailwind CSS + Recharts     │
 │   • 4 KPI Cards: Network, Predicted Pax, Overcrowding, Spare │
+│   • Admin Console: Mode Badge, Interactive Units (101-105)   │
 │   • Stackable Scenarios: Demand Spike & Capacity Loss        │
-│   • Dynamic Route Risk Table with 90% Interval & AI Reasons  │
-│   • Tab 1: 8-Window Intraday Forecast Curve vs. Capacity     │
+│   • Route Monitor Table with Inline [-]/[+] Steppers         │
+│   • Nearby Standby Bus Dispatch Broadcast Telemetry          │
+│   • Tab 1: 8-Window Intraday Forecast Curve (Live Tick Sync) │
 │   • Tab 2: 30-Day Historical Time-Series & Backtest View     │
 │   • Before vs. After Impact & Fairness Comparison Card       │
 │   • Hold-Out Backtest Validation & SQLite Audit Log Drawer   │
@@ -46,14 +50,16 @@ ANVATION 2026 Hackathon · Prepared October 2026
 │        ▼                                           ▼         │
 │  Risk & Overcrowd Probability ──► Fairness Allocator         │
 │        │                                           │         │
-│        └───────────────► Impact Metrics ◄──────────┘         │
+│        ├───────────────► Impact Metrics ◄──────────┘         │
+│        ▼                                                     │
+│  Static Asset Mount ("/") ──► Single-Port Web Service (:8000)│
 └───────────────────────────────┬──────────────────────────────┘
                                 ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                     SQLITE DATABASE LAYER                    │
 │   • route_baselines (6 routes, 100 seats/bus)                │
 │   • route_history (1,440 rows, 30 days, 8 windows, seed 42)  │
-│   • allocation_log (immutable audit trail of AI dispatches)  │
+│   • allocation_log (immutable audit trail of AI & overrides) │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,7 +70,7 @@ ANVATION 2026 Hackathon · Prepared October 2026
 ### 3.1 `route_baselines`
 | Column | Type | Details |
 |---|---|---|
-| `route_id` | TEXT PRIMARY KEY | Route identifier (R001–R006) |
+| `route_id` | TEXT PRIMARY KEY | Route identifier (`R001`–`R006`) |
 | `route_name` | TEXT | Human-readable route corridor |
 | `vehicles` | INTEGER | Active base vehicle count |
 | `bus_cap` | INTEGER | Standard capacity per vehicle (100 seats) |
@@ -85,8 +91,8 @@ ANVATION 2026 Hackathon · Prepared October 2026
 - Route `R002` on days 9, 19, 26: `weather = 'Rain'`, `event = 'Major Festival'`, demand $\times 1.60$.
 
 ### 3.3 `allocation_log`
-Records operator-committed AI dispatches:
-- `id` (INTEGER PK), `ts` (ISO string), `scenario`, `hour`, `route_id`, `vehicles_added`, `util_before`, `util_after`, `reason`.
+Records operator-committed AI and human-approved dispatches:
+- `id` (INTEGER PK), `ts` (ISO string), `scenario`, `hour`, `route_id`, `vehicles_added`, `util_before`, `util_after`, `reason` (`[AI_DISPATCH]` or `[HUMAN_OVERRIDE]`).
 
 ---
 
@@ -125,6 +131,11 @@ $$\text{service} = \frac{\min(\text{capacity} / \text{pred}, 1.5)}{1.5}$$
 $$\text{fairness} = \frac{0.5}{1.0 + e} + 0.5 \times (1.0 - service)$$
 $$\text{Score} = 0.60 \times \text{severity} + 0.25 \times \text{pressure} + 0.15 \times \text{fairness}$$
 
+### 4.6 Human Intervention & Override Mechanics
+`POST /api/analyze` accepts an optional `manual_alloc: Optional[Dict[str, int]]`:
+- If omitted, computes optimal AI distribution.
+- If provided, enforces `spare_vehicles` quota, recomputes capacities and network impact under operator overrides, and preserves the AI's `recommendation` for comparison.
+
 ---
 
 ## 5. Hold-Out Backtest Validation
@@ -133,18 +144,36 @@ The backtest splits the 30-day synthetic dataset into:
 - **Training Set:** Days 1–23 (clear baselines and measured multipliers).
 - **Test Set:** Held-out Days 24–30 (last 7 days).
 
-Metrics computed per route:
-- **MAE (Mean Absolute Error):** Average passenger divergence.
-- **MAPE (%):** Mean Absolute Percentage Error.
-- **90% Interval Coverage (%):** Percentage of test actuals falling within $[\text{Lower}, \text{Upper}]$.
+| Route ID | Route Corridor Name | MAE (Pax) | MAPE (%) | 90% Interval Coverage | Sample Count |
+|---|---|---|---|---|---|
+| **R001** | Central <-> Airport | 41.3 pax | 6.2% | **85.7%** | 7 |
+| **R002** | Central <-> Railway Station | 31.8 pax | 3.7% | **85.7%** | 7 |
+| **R003** | University <-> City Center | 31.2 pax | 5.3% | **85.7%** | 7 |
+| **R004** | Industrial Area <-> Central | 38.6 pax | 4.2% | **100.0%** | 7 |
+| **R005** | Market <-> Bus Terminal | 29.2 pax | 5.6% | **85.7%** | 7 |
+| **R006** | Residential <-> IT Park | 44.6 pax | 4.9% | **71.4%** | 7 |
+| **Average** | **Network Overall** | **36.1 pax** | **5.0%** | **85.7%** | **42 evaluations** |
 
 ---
 
 ## 6. Endpoints Reference
 
-- `POST /api/analyze`: Evaluates network state, applies scenario stacking, runs fairness optimizer, and logs actions.
-- `GET /api/intraday/{route_id}`: Returns 8-window daily curve (06:00–21:00) with confidence intervals.
+- `POST /api/analyze`: Evaluates network state, applies scenario stacking, runs fairness optimizer or manual override, and logs actions.
+- `GET /api/intraday/{route_id}?tick_step=0`: Returns 8-window daily curve (06:00–21:00) with confidence intervals and real-time tick sync.
 - `GET /api/history/{route_id}?hour=08:00`: Returns 30-day history and intraday profile.
 - `GET /api/backtest?hour=08:00`: Computes hold-out evaluation metrics.
 - `GET /api/log`: Retrieves recent entries from `allocation_log`.
 - `POST /api/reset`: Resets logs to initial state.
+
+---
+
+## 7. Deployment Instructions
+
+### 7.1 Single-Port Docker (Recommended)
+```bash
+docker compose up -d --build
+```
+Access full-stack app and API at `http://localhost:8000`.
+
+### 7.2 1-Click Render Cloud Deployment
+Connect GitHub repository `https://github.com/itsjustthej/CodeVanta` in [Render](https://dashboard.render.com) using Blueprint `render.yaml`.

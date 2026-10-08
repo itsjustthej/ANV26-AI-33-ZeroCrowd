@@ -11,50 +11,57 @@ Urban public transportation networks in high-density metropolitan areas (such as
 
 **ZeroCrowd** is an automated decision-support command center that transforms transit capacity management:
 1. **Probabilistic Forecasting:** Evaluates clear-day historical baselines and extracts data-driven event multipliers to project passenger loads across 8 daily time windows with a formal **90% normal prediction interval**.
-2. **Exceedance Risk Quantification:** Computes the mathematical probability of overcrowding using the Gaussian error function ($\text{erf}$), categorizing routes into four distinct operational risk tiers.
+2. **Exceedance Risk Quantification:** Computes the mathematical probability of overcrowding using the Gaussian error function ($\text{erf}$), categorizing routes into four distinct operational risk tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
 3. **Stackable Incident Simulation:** Supports concurrent demand surges and vehicle breakdowns, enabling operators to test complex stress scenarios where multiple routes compete for limited emergency fleet assets.
 4. **Greedy Fairness-Aware Allocation:** Dispatches a pool of spare vehicles one-by-one, dynamically re-scoring candidates after every vehicle to balance overloading severity, network passenger pressure, and under-service fairness.
-5. **Empirical Validation & Auditability:** Backtests baseline forecasts on held-out test data (Days 24–30) and logs every operator-approved dispatch to an immutable SQLite audit trail.
+5. **Human-in-the-Loop Override & Interactive Fleet Console:** Empowers transit controllers with inline `[-]` / `[+]` route steppers and clickable standby depot units (`UNIT-101` through `UNIT-105`) to dispatch, recall, or override AI recommendations in real time.
+6. **Nearby Vehicle Dispatch Broadcast Telemetry:** Broadcasts immediate routing notifications to nearby standby buses and records operator actions into an immutable, prefixed SQLite audit trail (`[AI_DISPATCH]` vs `[HUMAN_OVERRIDE]`).
+7. **Universal Single-Port Docker & Cloud Architecture:** Packages the entire React 19 SPA and FastAPI predictive engine into a single container running on port `8000`, pre-configured with a 1-click Render Blueprint (`render.yaml`).
+8. **Empirical Validation & Auditability:** Backtests baseline forecasts on held-out test data (Days 24–30) achieving 85.7% interval coverage with 5.0% MAPE.
 
 ---
 
 ## 2. System Architecture
 
-The system uses a clean separation of concerns: a pure, deterministic calculation engine in Python FastAPI, coupled with a high-performance React 19 visualization dashboard.
+The platform follows a unified single-port architecture: a pure, deterministic calculation engine in Python FastAPI, coupled with a high-performance React 19 visualization dashboard served directly as static assets.
 
 ```text
-┌──────────────────────────────────────────────────────────────────────────┐
-│                     REACT COMMAND-CENTER DASHBOARD                      │
-│        React 19 + Vite + TypeScript + Tailwind CSS + Recharts           │
-│                                                                          │
-│  [Top Controls]  Window (06:00-21:00) | Spares Pool (5) | Spike | Loss  │
-│  [KPI Summary]   Network Size | Total Pax | Overcrowded | Spares Left    │
-│  [Alert Banner]  1-Click AI Dispatch Commit / Revert Preview             │
-│  [Route Monitor] Risk Tiers | 90% CI | Capacity | Prob % | AI Reason     │
-│  [Charts Panel]  Tab 1: 8-Window Intraday vs. Capacity                   │
-│                  Tab 2: 30-Day Historical Time-Series & Backtest Split   │
-│  [Impact Card]   Overcrowding Reduction % | Fairness Spread Drop         │
-│  [Audit Drawer]  Hold-Out Backtest Table | SQLite allocation_log Feed    │
-└────────────────────────────────────┬──────────────────▲──────────────────┘
-                                     │ REST Polling (2s)│
-                                     ▼                  │
-┌──────────────────────────────────────────────────────────────────────────┐
-│                   FASTAPI DETERMINISTIC CALCULATION ENGINE               │
-│                                                                          │
-│   Baseline Extractor ──► Scenario Stacking ──► 90% Prediction Interval  │
-│           │                                             │                │
-│           ▼                                             ▼                │
-│   Gaussian Risk Engine (erf) ──► Greedy Fairness-Aware Optimizer         │
-│           │                                             │                │
-│           └───────────────► Before/After Metrics ◄──────┘                │
-└────────────────────────────────────┬─────────────────────────────────────┘
-                                     ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        SQLITE DATABASE STORAGE                           │
-│   • route_baselines : 6 corridors, base fleet, 100 seats/bus             │
-│   • route_history   : 1,440 hourly records (30 days × 6 routes × 8 wins) │
-│   • allocation_log  : Persistent audit trail of human-approved actions   │
-└──────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         REACT COMMAND-CENTER DASHBOARD                           │
+│              React 19 + Vite + TypeScript + Tailwind CSS + Recharts              │
+│                                                                                  │
+│  [Top Controls]    Window (06:00-21:00) | Spares Pool (5) | Spike | Loss         │
+│  [KPI Summary]     Network Size | Total Pax (90% CI) | Overcrowded | Spares Left │
+│  [Admin Console]   Control Mode Badge | Interactive Units (UNIT-101 to 105)      │
+│                    Click to Dispatch / Click to Recall | Restore AI Button       │
+│  [Broadcast Bar]   📡 Standby Dispatch Notification Telemetry                    │
+│  [Route Monitor]   Risk Tiers | 90% CI | Inline [-]/[+] Steppers | AI Reason     │
+│  [Charts Panel]    Tab 1: 8-Window Intraday vs. Capacity (Live Tick Sync)        │
+│                    Tab 2: 30-Day Historical Time-Series & Backtest Split         │
+│  [Impact Card]     Overcrowding Reduction % | Fairness Spread Drop (Simulated)   │
+│  [Audit Drawer]    Hold-Out Backtest Table | SQLite allocation_log Feed          │
+└────────────────────────────────────────┬──────────────────▲──────────────────────┘
+                                         │ REST Polling (2s)│
+                                         ▼                  │
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                     FASTAPI DETERMINISTIC CALCULATION ENGINE                     │
+│                                                                                  │
+│   Baseline Extractor ──► Scenario Stacking ──► 90% Prediction Interval           │
+│           │                                             │                        │
+│           ▼                                             ▼                        │
+│   Gaussian Risk Engine (erf) ──► Greedy Fairness Optimizer / Human Override     │
+│           │                                             │                        │
+│           ├───────────────► Before/After Impact Metrics ◄┘                       │
+│           ▼                                                                      │
+│   Static Asset Mount ("/") ──► Single-Port Web Service (:8000 / $PORT)          │
+└────────────────────────────────────────┬─────────────────────────────────────────┘
+                                         ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                            SQLITE DATABASE STORAGE                               │
+│   • route_baselines : 6 corridors, base fleet, 100 seats/bus                     │
+│   • route_history   : 1,440 hourly records (30 days × 6 routes × 8 wins)         │
+│   • allocation_log  : Persistent audit trail ([AI_DISPATCH] / [HUMAN_OVERRIDE])  │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -93,13 +100,21 @@ Stores historical ridership logs for parameter calibration:
 
 ### 3.3 `allocation_log`
 Immutable record of dispatch decisions committed by the operator:
-- `id`, `ts` (ISO timestamp), `scenario`, `hour`, `route_id`, `vehicles_added`, `util_before`, `util_after`, `reason`.
+- `id` (INTEGER PK AUTOINCREMENT)
+- `ts` (TEXT ISO timestamp)
+- `scenario` (TEXT): Incident scenario tag
+- `hour` (TEXT): Scheduled window
+- `route_id` (TEXT): Target corridor
+- `vehicles_added` (INTEGER): Additional dispatched vehicles
+- `util_before` (REAL): Route utilization percentage before action
+- `util_after` (REAL): Route utilization percentage after action
+- `reason` (TEXT): Telemetry description prefixed with `[AI_DISPATCH]` or `[HUMAN_OVERRIDE]`
 
 ---
 
 ## 4. Mathematical Engine Specification
 
-All forecasting and optimization logic is implemented in pure Python functions.
+All forecasting, risk quantification, and multi-objective optimization logic is implemented in pure Python without black-box dependencies.
 
 ### 4.1 Clear-Day Baseline & Event Uplift
 To prevent double-counting anomalies in baseline projections, the engine queries clear, non-event records:
@@ -129,12 +144,12 @@ $$\text{Utilization} = \frac{\text{pred}}{\text{Capacity}} \times 100\%$$
 Overcrowding probability is calculated using the Gaussian CDF via `math.erf`:
 $$P(\text{overcrowded}) = 1.0 - \Phi\left(\frac{\text{Capacity} - \text{pred}}{\sigma}\right) = 1.0 - \frac{1}{2}\left(1 + \text{erf}\left(\frac{\text{Capacity} - \text{pred}}{\sigma\sqrt{2}}\right)\right)$$
 
-| Risk Tier | Utilization Range | Action Required |
-|---|---|---|
-| **LOW** | $< 80.0\%$ | Routine operations |
-| **MEDIUM** | $80.0\% \le \text{util} \le 100.0\%$ | Monitor corridor |
-| **HIGH** | $100.0\% < \text{util} \le 120.0\%$ | Dispatch candidate |
-| **CRITICAL** | $> 120.0\%$ | Urgent dispatch priority |
+| Risk Tier | Utilization Range | Operational Status | Action Required |
+|---|---|---|---|
+| **LOW** | $< 80.0\%$ | Optimal headroom | Routine operations |
+| **MEDIUM** | $80.0\% \le \text{util} \le 100.0\%$ | Near capacity | Monitor corridor |
+| **HIGH** | $100.0\% < \text{util} \le 120.0\%$ | Standing-room overflow | Dispatch candidate |
+| **CRITICAL** | $> 120.0\%$ | Severe crushing hazard | Urgent dispatch priority |
 
 **Eligibility Condition:** A route qualifies for emergency fleet assistance if:
 $$\text{Utilization} > 100.0\% \quad \lor \quad P(\text{overcrowded}) \ge 50\%$$
@@ -154,6 +169,15 @@ With a pool of $S = 5$ spare buses, the optimizer assigns vehicles **one at a ti
 3. Priority Score:
    $$\text{Score} = 0.60 \times \text{severity} + 0.25 \times \text{pressure} + 0.15 \times \text{fairness}$$
 4. Assign 1 vehicle to the route with the highest score. Repeat until the spare fleet is exhausted or no routes remain eligible.
+
+### 4.6 Human Intervention & Override Mechanics
+To support real-world human-in-the-loop dispatching, `POST /api/analyze` accepts an optional `manual_alloc: Optional[Dict[str, int]]`:
+- If `manual_alloc` is omitted, the engine uses the AI's greedy optimal distribution.
+- If `manual_alloc` is provided, the engine:
+  1. Validates that the total manually allocated vehicles do not exceed the available `spare_vehicles` pool.
+  2. Recomputes route capacities, utilization, exceedance probabilities, and before/after network impact using the operator's manual assignments.
+  3. Returns the AI's unconstrained `recommendation` alongside the `active_alloc` for real-time comparison.
+  4. Tags responses with `is_manual: true` to drive interface badges and audit prefixes.
 
 ---
 
@@ -184,11 +208,18 @@ With a pool of $S = 5$ spare buses, the optimizer assigns vehicles **one at a ti
 
 *Analysis:* The 85.7% aggregate coverage on held-out test days aligns closely with the nominal 90% prediction interval target, confirming well-calibrated error bounds without artificial parameter inflation.
 
+### 5.3 Human Override vs. AI Optimal Allocation Benchmark
+
+In stress tests where human operators divert vehicles away from AI recommendations:
+- **Test Case:** Under Stacked Spike + Breakdown, AI recommends `R002: +2, R004: +2`. If an operator manually diverts 1 bus to `R001` (`R001: +1, R002: +1, R004: +2`):
+  - Overcrowding reduction drops from **100%** to **82.5%** because `R002` retains 38 unserved passengers.
+  - The UI immediately renders the sub-optimal impact metric and provides a 1-click **Restore AI Recommendation** action.
+
 ---
 
 ## 6. Command-Center Dashboard Walkthrough
 
-The React 19 interface provides operational visibility across multiple panels:
+The React 19 interface provides comprehensive operational visibility across multiple panels:
 
 1. **Top Simulation Header & Badge:** Prominently marked `LIVE SIMULATION · SYNTHETIC HISTORICAL DATA` with ANVATION 2026 branding.
 2. **Interactive Controls Bar:**
@@ -203,25 +234,54 @@ The React 19 interface provides operational visibility across multiple panels:
    - Total Network Predicted Demand with 90% CI indicator.
    - Overcrowded / Critical Routes count and excess unserved passenger volume.
    - Spare Fleet Pool status (dispatched vs. remaining).
-4. **Dynamic Decision Banner:** Displays detected anomalies and allows 1-click execution (`APPLY AI ALLOCATION`) or reversion.
-5. **Route Monitor Table:** Interactive rows showing route name, current operating condition, point forecast with 90% interval `[lower – upper]`, fleet size (+extra badge), color-coded utilization bar, exceedance probability %, risk tier badge, and transparent AI allocation rationale strings.
-6. **Dual-Tab Recharts Analytics Panel:**
-   - **Tab 1 (8-Window Intraday Forecast Curve):** Visualizes the full daily demand curve from 06:00 to 21:00, shaded 90% upper bound confidence area, and step-line effective capacity threshold.
+4. **Admin Dispatch & Human-in-the-Loop Console:**
+   - **Control Mode Badge:** Renders `AI Optimal Recommendation` (emerald) or `Human Override Active` (amber).
+   - **Interactive Spare Units (`UNIT-101` to `UNIT-105`):**
+     * Click assigned unit &rarr; recalls unit back to `[STANDBY IN DEPOT]`.
+     * Click standby unit &rarr; dispatches unit directly to the currently selected route.
+   - **Restore AI Button:** 1-click restore to reset all manual adjustments back to the algorithm's optimal dispatch.
+5. **Nearby Standby Dispatch Broadcast Banner:** Displays immediate routing notifications (e.g., `📡 Dispatch Notification Sent to Nearby Standby Units [UNIT-101, UNIT-102] -> Rerouted to R004`).
+6. **Route Monitor Table:**
+   - Corridor name and live condition badges.
+   - Point forecast with 90% interval `[lower – upper]`.
+   - Fleet capacity with inline **`[-]` and `[+]` steppers** for per-route adjustments.
+   - Color-coded utilization progress bar and exceedance probability %.
+   - Operational risk tier badges (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+   - Transparent AI allocation rationale strings.
+7. **Dual-Tab Recharts Analytics Panel:**
+   - **Tab 1 (8-Window Intraday Forecast Curve):** Full daily demand curve from 06:00 to 21:00, shaded 90% upper bound confidence area, step-line effective capacity threshold, and live graph synchronization on every 2-second tick with zero sweep jitter (`isAnimationActive={false}`).
    - **Tab 2 (30-Day Historical Time-Series):** Plots all 30 days of passenger demand with markers for Rain and Major Festivals, along with a vertical guide line marking the Day 23 Train/Test split.
-7. **Before vs. After Impact Comparison Card:** Badged `Simulated Demo Impact`, featuring:
+8. **Before vs. After Impact Comparison Card:** Badged `Simulated Demo Impact`:
    - Percentage reduction in overcrowding.
    - Overcrowded routes before $\to$ after.
    - Critical routes before $\to$ after.
    - Average network utilization before $\to$ after.
-   - **Fairness: Service-Level Share:** Percentage of routes operating safely without emergency help.
-   - **Fairness: Utilization Spread:** Disparity between highest and lowest route utilization in percentage points.
-8. **Bottom Verification & Audit Log:**
+   - **Fairness: Service-Level Share:** Percentage of routes operating safely.
+   - **Fairness: Utilization Spread:** Disparity between highest and lowest route utilization.
+9. **Bottom Verification & Audit Log:**
    - Live rendering of hold-out backtest error metrics.
-   - Real-time audit trail displaying entries from SQLite `allocation_log`.
+   - Real-time audit trail displaying entries from SQLite `allocation_log` with `[AI_DISPATCH]` and `[HUMAN_OVERRIDE]` provenance prefixes.
 
 ---
 
-## 7. Production Roadmap
+## 7. Universal Single-Port Docker & Cloud Deployment
+
+### 7.1 Architecture & Single-Port Static Serving
+ZeroCrowd eliminates CORS, complex reverse-proxy setups, and host IP binding issues by combining the React SPA build and the FastAPI backend into a single container:
+1. **Frontend Build Stage (`node:20-alpine`):** Builds production static assets into `dist/`.
+2. **Runtime Stage (`python:3.11-slim`):** Copies compiled assets to `/app/static`.
+3. **FastAPI Mount:** Mounted at `"/"` with `StaticFiles(directory="/app/static", html=True)` **after** all `/api/*` endpoints. Requests to `/api/*` route to Python handlers, while all other requests serve the React SPA.
+4. **Single Worker Invariant:** Uvicorn runs with `--workers 1` to ensure thread-safety for SQLite and consistent in-memory live simulation state.
+
+### 7.2 Render 1-Click Cloud Deployment
+ZeroCrowd is pre-configured with a native Render Blueprint ([`render.yaml`](file:///c:/Users/shrey/Documents/AIIIIII/render.yaml)):
+- **Dynamic Port Binding:** The container entrypoint executes `sh -c "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"`, binding dynamically to Render's injected `$PORT` while defaulting to `8000` in local Docker.
+- **Health Check:** Configured on `/api/backtest` for rapid zero-downtime deployment.
+- **Repository:** Connected directly to GitHub (`https://github.com/itsjustthej/CodeVanta.git`).
+
+---
+
+## 8. Production Roadmap
 
 For municipal deployment beyond hackathon simulation:
 1. **Machine Learning Model Upgrade:** Transition statistical clear-day baselines to Quantile Gradient Boosted Regression (LightGBM) or Temporal Fusion Transformers (TFT) trained on multi-year Automated Passenger Counter (APC) feeds.
@@ -231,25 +291,31 @@ For municipal deployment beyond hackathon simulation:
 
 ---
 
-## 8. Quick Start Guide
+## 9. Quick Start Guide
 
-### Prerequisites
-- Python 3.10+
-- Node.js 18+ (tested on Node v24)
-- npm 9+
+### Option A: One-Command Docker Deployment (Recommended)
+```bash
+docker compose up -d --build
+```
+- **Unified Command Center & API:** `http://localhost:8000`
+- **Interactive Swagger Docs:** `http://localhost:8000/docs`
 
-### Backend Launch
+### Option B: 1-Click Render Cloud Deployment
+Connect repository `https://github.com/itsjustthej/CodeVanta` in [Render](https://dashboard.render.com) via Blueprint (`render.yaml`) for instant live deployment.
+
+### Option C: Local Development (Without Docker)
+
+#### 1. Backend
 ```bash
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
-- OpenAPI Documentation: `http://localhost:8000/docs`
 
-### Frontend Launch
+#### 2. Frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-- Command Center UI: `http://localhost:5173`
+Access UI at `http://localhost:5173` (proxies `/api` to `http://127.0.0.1:8000`).
