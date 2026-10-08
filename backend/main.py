@@ -91,6 +91,85 @@ ROUTE_SPECS = [
 
 ROUTE_INDEX_MAP = {r["id"]: idx for idx, r in enumerate(ROUTE_SPECS)}
 
+ROUTE_HOUR_PROFILES = {
+    # KIA-9 Airport: early flight rush & late-night arrivals
+    "R001": {
+        "06:00": 0.92,
+        "08:00": 0.84,
+        "10:00": 0.78,
+        "12:00": 0.80,
+        "14:00": 0.82,
+        "17:00": 0.85,
+        "19:00": 0.90,
+        "21:00": 0.86,
+    },
+    # 252-F Majestic ↔ Railway/KR Market: twin rail/interchange peaks + strong midday
+    "R002": {
+        "06:00": 0.75,
+        "08:00": 0.94,
+        "10:00": 0.82,
+        "12:00": 0.78,
+        "14:00": 0.80,
+        "17:00": 0.96,
+        "19:00": 0.88,
+        "21:00": 0.70,
+    },
+    # 226-M Univ ↔ MG Road: morning lecture surge + early afternoon campus exit
+    "R003": {
+        "06:00": 0.50,
+        "08:00": 0.95,
+        "10:00": 0.86,
+        "12:00": 0.72,
+        "14:00": 0.92,
+        "17:00": 0.78,
+        "19:00": 0.58,
+        "21:00": 0.45,
+    },
+    # 401-M Peenya Industrial: factory shift change curve (06:00 & 17:00)
+    "R004": {
+        "06:00": 0.94,
+        "08:00": 0.88,
+        "10:00": 0.60,
+        "12:00": 0.56,
+        "14:00": 0.58,
+        "17:00": 0.95,
+        "19:00": 0.72,
+        "21:00": 0.48,
+    },
+    # KBS-3A Banashankari: midday & evening commercial shopping curve
+    "R005": {
+        "06:00": 0.52,
+        "08:00": 0.68,
+        "10:00": 0.80,
+        "12:00": 0.88,
+        "14:00": 0.85,
+        "17:00": 0.92,
+        "19:00": 0.96,
+        "21:00": 0.72,
+    },
+    # 500-D Silk Board ↔ Hebbal ORR: classic bimodal tech commuter curve
+    "R006": {
+        "06:00": 0.55,
+        "08:00": 0.92,
+        "10:00": 0.96,
+        "12:00": 0.54,
+        "14:00": 0.56,
+        "17:00": 0.90,
+        "19:00": 0.98,
+        "21:00": 0.74,
+    },
+}
+
+ROUTE_PEAK_DEMAND = {
+    "R001": 780,   # KIA-9 Airport: 10 buses * 100 = 1000 cap; peak ~718 pax (71.8% util)
+    "R002": 820,   # 252-F Majestic: 10 buses * 100 = 1000 cap; peak ~787 pax (78.7% util)
+    "R003": 680,   # 226-M Univ: 9 buses * 100 = 900 cap; peak ~646 pax (71.8% util)
+    "R004": 900,   # 401-M Peenya: 10 buses * 100 = 1000 cap; peak ~855 pax (85.5% util)
+    "R005": 580,   # KBS-3A Banashankari: 8 buses * 100 = 800 cap; peak ~557 pax (69.6% util)
+    "R006": 1020,  # 500-D ORR: 12 buses * 100 = 1200 cap; peak ~1000 pax (83.3% util)
+}
+
+# Legacy fallback for backward compatibility
 WINDOW_FACTORS = {
     "06:00": 0.65,
     "08:00": 1.00,
@@ -139,7 +218,17 @@ def init_db():
 
     cur.execute("PRAGMA table_info(route_history)")
     cols = [r[1] for r in cur.fetchall()]
+    needs_reseed = False
     if "event_flag" not in cols or "lag_1h_pax" not in cols or "rolling_3h_pax" not in cols:
+        needs_reseed = True
+    else:
+        # Check if route_history was populated with route-specific profiles (R001 06:00 is ~718 vs old ~455)
+        cur.execute("SELECT passengers FROM route_history WHERE route_id = 'R001' AND hour = '06:00' LIMIT 1")
+        r001_check = cur.fetchone()
+        if r001_check is None or r001_check[0] < 550:
+            needs_reseed = True
+
+    if needs_reseed:
         cur.execute("DROP TABLE IF EXISTS route_history")
         cur.execute("DROP TABLE IF EXISTS route_baselines")
 
@@ -218,11 +307,14 @@ def init_db():
             for r in ROUTE_SPECS:
                 rid = r["id"]
                 cap = r["vehicles"] * 100
+                ref_peak = ROUTE_PEAK_DEMAND.get(rid, 800)
+                profile = ROUTE_HOUR_PROFILES.get(rid, {})
 
                 # Precompute window demands for this day
                 window_pax = []
                 for w_idx, w in enumerate(WINDOWS):
-                    base = r["m17"] if w == "17:00" else r["m08"] * WINDOW_FACTORS[w]
+                    h_factor = profile.get(w, 0.80)
+                    base = round(ref_peak * h_factor)
                     mult = 1.0
 
                     if is_weekend == 1:
@@ -542,7 +634,10 @@ def build_forecasts(
             cong_factor = max(cong_factor, 1.85)
             hw_delay = max(hw_delay, 12.0)
 
-        base_val = r_spec["m17"] if hour == "17:00" else r_spec["m08"] * WINDOW_FACTORS.get(hour, 0.8)
+        route_profile = ROUTE_HOUR_PROFILES.get(rid, {})
+        h_factor = route_profile.get(hour, 0.80)
+        ref_peak = ROUTE_PEAK_DEMAND.get(rid, 800)
+        base_val = round(ref_peak * h_factor)
         day_mult = 1.0
         if is_we == 1.0:
             if rid == "R006":
@@ -593,31 +688,16 @@ def build_forecasts(
             condition = "Monsoon Rain + KR Market Festival Surge"
         elif capacity_loss and rid == "R004":
             vehicles = max(0, b["vehicles"] - 2)
-            pred = 920
-            lower = 850
-            upper = 990
+            pred = round(base_val * day_mult)
+            lower = max(20, round(pred * 0.90))
+            upper = round(pred * 1.10)
             sigma = 20.0
             cong_factor = 1.45
             hw_delay = 8.5
             condition = "2 Vehicles Lost (Peenya Breakdown)"
         else:
-            # Baseline normal operating band (62% to 84% utilization across normal corridors)
-            cap_seats = b["vehicles"] * b["bus_cap"]
-            target_util_map = {
-                "R001": 0.72,  # KIA-9 Kempegowda Airport (72.0% util)
-                "R002": 0.78,  # 252-F Majestic & KR Market (78.0% util)
-                "R003": 0.70,  # 226-M Jnanabharathi Univ (70.0% util)
-                "R004": 0.82,  # 401-M Peenya Industrial (82.0% util)
-                "R005": 0.65,  # KBS-3A Banashankari (65.0% util)
-                "R006": 0.84,  # 500-D Silk Board IT Corridor (84.0% util)
-            }
-            norm_util = target_util_map.get(rid, 0.75) * WINDOW_FACTORS.get(hour, 1.0)
-            if is_we == 1.0:
-                if rid in ["R006", "R004", "R003"]:
-                    norm_util *= 0.52
-                elif rid in ["R002", "R005"]:
-                    norm_util = min(norm_util * 1.10, 0.88)
-            pred = max(50, round(cap_seats * norm_util))
+            # Baseline normal operating band (each route's unique curve)
+            pred = max(50, round(base_val * day_mult))
             lower = max(20, round(pred * 0.90))
             upper = round(pred * 1.10)
             sigma = max((upper - lower) / 3.29, 0.04 * pred, 1.0)
@@ -679,6 +759,100 @@ def build_forecasts(
         })
 
     return routes
+
+
+def compute_intraday_for_route(
+    route_id: str,
+    spike: bool = False,
+    capacity_loss: bool = False,
+    alloc_extra: int = 0,
+    tick_step: int = 0,
+    day_type: str = "WEEKDAY",
+) -> List[dict]:
+    profile = []
+    r_spec = next((s for s in ROUTE_SPECS if s["id"] == route_id), ROUTE_SPECS[0])
+    r_idx = ROUTE_INDEX_MAP.get(route_id, 0)
+    is_we = 1.0 if day_type.upper() == "WEEKEND" else 0.0
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT vehicles, bus_cap FROM route_baselines WHERE route_id = ?", (route_id,))
+    row = cur.fetchone()
+    base_vehicles = row["vehicles"] if row else r_spec["vehicles"]
+    bus_cap = row["bus_cap"] if row else 100
+    conn.close()
+
+    ref_peak = ROUTE_PEAK_DEMAND.get(route_id, 800)
+    route_factors = ROUTE_HOUR_PROFILES.get(route_id, {})
+
+    vehicles = base_vehicles
+    if capacity_loss and route_id == "R004":
+        vehicles = max(0, vehicles - 2)
+    # Apply dispatched vehicles
+    vehicles_after = max(0, vehicles + alloc_extra)
+    eff_cap = vehicles_after * bus_cap
+    nominal_cap = base_vehicles * bus_cap
+
+    for w in WINDOWS:
+        h_factor = route_factors.get(w, 0.80)
+        base_demand = round(ref_peak * h_factor)
+        day_mult = 1.0
+        if is_we == 1.0:
+            if route_id == "R006":
+                day_mult = 0.50
+            elif route_id == "R004":
+                day_mult = 0.54
+            elif route_id == "R003":
+                day_mult = 0.52
+            elif route_id in ["R002", "R005"]:
+                day_mult = 1.18
+            elif route_id == "R001":
+                day_mult = 1.05
+
+        pred = max(40, round(base_demand * day_mult))
+        cong = 1.0
+
+        if spike and route_id == "R002":
+            cong = 1.85
+            if w in ["08:00", "17:00"]:
+                pred = 1280
+            else:
+                pred = max(50, round(1280 * (h_factor / 0.95)))
+        elif capacity_loss and route_id == "R004":
+            cong = 1.45
+
+        lower = max(20, round(pred * 0.90))
+        upper = round(pred * 1.10)
+
+        if tick_step > 0:
+            tick_factor = 1.0 + 0.012 * math.sin(tick_step * 0.85 + r_idx)
+            pred = max(20, round(pred * tick_factor))
+            lower = max(10, round(lower * tick_factor))
+            upper = round(upper * tick_factor)
+
+        util = round((pred / max(eff_cap, 1)) * 100.0, 1)
+        sigma = max((upper - lower) / 3.29, 0.04 * pred, 1.0)
+        p_over = (
+            round((1.0 - phi((eff_cap - pred) / sigma)) * 100.0)
+            if eff_cap < pred
+            else min(18, round((1.0 - phi((eff_cap - pred) / sigma)) * 100.0))
+        )
+
+        profile.append({
+            "hour": w,
+            "baseline": base_demand,
+            "predicted": pred,
+            "lower": lower,
+            "upper": upper,
+            "capacity": eff_cap,
+            "nominal_capacity": nominal_cap,
+            "congestion_factor": cong,
+            "utilization": util,
+            "risk": classify_risk(util),
+            "probability": p_over,
+        })
+
+    return profile
 
 
 def assess_route(r: dict, extra: int = 0, score: float = 0.0, prev_util: float = 0.0, is_manual: bool = False):
@@ -1202,6 +1376,18 @@ def analyze(req: AnalyzeReq):
         ],
     }
 
+    intraday_series = {
+        r["id"]: compute_intraday_for_route(
+            route_id=r["id"],
+            spike=req.spike,
+            capacity_loss=req.capacity_loss,
+            alloc_extra=(active_alloc.get(r["id"], 0) if is_applied_or_committed else 0),
+            tick_step=(req.tick_step or 0),
+            day_type=req.day_type,
+        )
+        for r in ROUTE_SPECS
+    }
+
     return {
         "scenario": scenario_label,
         "day_type": req.day_type,
@@ -1216,6 +1402,7 @@ def analyze(req: AnalyzeReq):
         "harvested_pool": harvested_count,
         "total_available_pool": total_pool,
         "routes": display_rows,
+        "intraday_series": intraday_series,
         "recommendation": {k: v for k, v in rec.items() if v != 0},
         "active_alloc": {k: v for k, v in active_alloc.items() if v != 0},
         "donor_routes": donors,
@@ -1288,100 +1475,26 @@ def get_intraday_profile(
     spike: bool = Query(False),
     capacity_loss: bool = Query(False),
     apply: bool = Query(False),
+    extra: int = Query(0),
     spare: int = Query(5),
     tick_step: int = Query(0),
     day_type: str = Query("WEEKDAY"),
 ):
-    profile = []
-    r_spec = next((s for s in ROUTE_SPECS if s["id"] == route_id), ROUTE_SPECS[0])
-    r_idx = ROUTE_INDEX_MAP.get(route_id, 0)
-    is_we = 1.0 if day_type.upper() == "WEEKEND" else 0.0
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT vehicles, bus_cap FROM route_baselines WHERE route_id = ?", (route_id,))
-    row = cur.fetchone()
-    base_vehicles = row["vehicles"] if row else r_spec["vehicles"]
-    bus_cap = row["bus_cap"] if row else 100
-    conn.close()
-
-    eff_rain = 18.5 if (spike and route_id == "R002") else CURRENT_LIVE_WEATHER.get("rain_mm", 0.0)
-    eff_temp = 23.5 if eff_rain > 0 else CURRENT_LIVE_WEATHER.get("temp_c", 26.5)
-
-    vehicles = base_vehicles
-    if capacity_loss and route_id == "R004":
-        vehicles = max(0, vehicles - 2)
-    if apply:
+    alloc_extra = extra
+    if apply and alloc_extra == 0:
         if spike and route_id == "R002":
-            vehicles += 3
+            alloc_extra = 3
         elif capacity_loss and route_id == "R004":
-            vehicles += 2
+            alloc_extra = 2
 
-    for w in WINDOWS:
-        hf = float(w.split(":")[0])
-        h_sin = math.sin(2.0 * math.pi * hf / 24.0)
-        h_cos = math.cos(2.0 * math.pi * hf / 24.0)
-
-        c_conditions = compute_corridor_conditions(w, eff_rain, day_type, spike, capacity_loss)
-        c_data = c_conditions.get(route_id, {})
-        cong = float(c_data.get("congestion_factor", 1.0))
-
-        if spike and route_id == "R002":
-            pred = 1280 if w in ["08:00", "17:00"] else max(40, round(1280 * WINDOW_FACTORS.get(w, 0.8)))
-            lower = max(20, round(pred * 0.90))
-            upper = round(pred * 1.10)
-        elif capacity_loss and route_id == "R004":
-            pred = 920 if w in ["08:00", "17:00"] else max(40, round(920 * WINDOW_FACTORS.get(w, 0.8)))
-            lower = max(20, round(pred * 0.90))
-            upper = round(pred * 1.10)
-        else:
-            nominal_cap = base_vehicles * bus_cap
-            target_util_map = {
-                "R001": 0.72,
-                "R002": 0.78,
-                "R003": 0.70,
-                "R004": 0.82,
-                "R005": 0.65,
-                "R006": 0.84,
-            }
-            norm_util = target_util_map.get(route_id, 0.75) * WINDOW_FACTORS.get(w, 0.8)
-            if is_we == 1.0:
-                if route_id in ["R006", "R004", "R003"]:
-                    norm_util *= 0.52
-                elif route_id in ["R002", "R005"]:
-                    norm_util = min(norm_util * 1.10, 0.88)
-            pred = max(40, round(nominal_cap * norm_util))
-            lower = max(20, round(pred * 0.90))
-            upper = round(pred * 1.10)
-            cong = 1.0
-
-        if tick_step > 0:
-            tick_factor = 1.0 + 0.012 * math.sin(tick_step * 0.85 + r_idx)
-            pred = max(20, round(pred * tick_factor))
-            lower = max(10, round(lower * tick_factor))
-            upper = round(upper * tick_factor)
-
-        nominal_cap = vehicles * bus_cap
-        eff_cap = nominal_cap
-        util = round((pred / eff_cap) * 100.0, 1)
-        sigma = max((upper - lower) / 3.29, 0.04 * pred, 1.0)
-        p_over = round((1.0 - phi((eff_cap - pred) / sigma)) * 100.0) if eff_cap < pred else min(18, round((1.0 - phi((eff_cap - pred) / sigma)) * 100.0))
-
-        profile.append({
-            "hour": w,
-            "baseline": round(r_spec["m08"] * WINDOW_FACTORS.get(w, 0.8)),
-            "predicted": pred,
-            "lower": lower,
-            "upper": upper,
-            "capacity": eff_cap,
-            "nominal_capacity": nominal_cap,
-            "congestion_factor": cong,
-            "utilization": util,
-            "risk": classify_risk(util),
-            "probability": p_over,
-        })
-
-    return profile
+    return compute_intraday_for_route(
+        route_id=route_id,
+        spike=spike,
+        capacity_loss=capacity_loss,
+        alloc_extra=alloc_extra,
+        tick_step=tick_step,
+        day_type=day_type,
+    )
 
 
 @app.get("/api/history/{route_id}")

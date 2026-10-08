@@ -1,35 +1,40 @@
-# Node / Frontend
+# Dependencies & Virtual Environments
 node_modules/
 frontend/node_modules/
-dist/
-frontend/dist/
-.vite/
-*.local
-npm-debug.log*
-
-# Python / Backend
-__pycache__/
-**/__pycache__/
-*.py[cod]
-venv/
 .venv/
-backend/venv/
-backend/.venv/
-env/
-.env
-*.env
+venv/
+ENV/
+__pycache__/
+*.py[cod]
 
-# SQLite Database & Volatile Logs (auto-generated on startup)
+# Build Artifacts
+frontend/dist/
+frontend/build/
+backend/static/
+
+# Local Databases & Caches (Generated dynamically on Render startup)
 *.db
 *.sqlite
 *.sqlite3
-*.db-journal
 *.db-wal
 *.db-shm
+*.db-journal
+backend/real_bengaluru_cache.json
 
-# OS & Editor Noise
+# Environment & Secrets
+.env
+.env.*
+
+# Docker & Legacy Files (Not used for Render native deployment)
+Dockerfile
+docker-compose.yml
+.dockerignore
+backend/.dockerignore
+frontend/.dockerignore
+
+# OS & IDE Clutter
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-*.swp
+*.log

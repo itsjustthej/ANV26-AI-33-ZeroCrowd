@@ -193,6 +193,7 @@ interface AnalyzeResponse {
   harvested_pool?: number;
   total_available_pool?: number;
   routes: RouteData[];
+  intraday_series?: Record<string, any[]>;
   recommendation: Record<string, number>;
   active_alloc?: Record<string, number>;
   donor_routes?: DonorRoute[];
@@ -719,6 +720,16 @@ export default function App() {
   const activeEntries = Object.entries(activeAllocMap).filter(([_, v]) => v !== 0) as [string, number][];
   const selectedRouteObj = data?.routes.find((r) => r.id === selectedRoute) || data?.routes[0];
   const totalMovedVehicles = Object.values(activeAllocMap).reduce((sum, v) => sum + Math.abs(v), 0);
+
+  const activeIntradayData = (data?.intraday_series && data.intraday_series[selectedRoute]) || intraday;
+  const curIntra = (activeIntradayData && activeIntradayData.find((w: any) => w.hour === hour)) || activeIntradayData?.[0];
+  const predPax = curIntra?.predicted ?? selectedRouteObj?.predicted ?? 0;
+  const basePax = curIntra?.baseline ?? selectedRouteObj?.baseline_mean ?? 0;
+  const effCap = curIntra?.capacity ?? selectedRouteObj?.capacity ?? 0;
+  const lowerPax = curIntra?.lower ?? selectedRouteObj?.lower ?? 0;
+  const upperPax = curIntra?.upper ?? selectedRouteObj?.upper ?? 0;
+  const intervalHalfWidth = Math.round(Math.abs(upperPax - lowerPax) / 2);
+  const curUtil = curIntra?.utilization ?? selectedRouteObj?.utilization ?? 0;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-600 selection:text-white pb-12">
@@ -1737,10 +1748,10 @@ export default function App() {
             </div>
 
             {/* Chart Content */}
-            <div className="h-72 w-full mt-2">
+            <div key={`${selectedRoute}-${dayType}-${String(applied)}`} className="h-72 w-full mt-2">
               {activeChartTab === 'intraday' ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <ComposedChart data={intraday} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                  <ComposedChart data={activeIntradayData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
                     <XAxis dataKey="hour" stroke="#94a3b8" fontSize={12} tickLine={false} />
                     <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} domain={['auto', 'auto']} />
@@ -1856,6 +1867,42 @@ export default function App() {
                   </ComposedChart>
                 </ResponsiveContainer>
               )}
+            </div>
+
+            {/* Live Corridor Inspection Footer */}
+            <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="flex items-center gap-1.5 font-mono text-slate-300">
+                  <span className="text-slate-400">Current Window ({hour}):</span>
+                  <strong className="text-cyan-400 font-bold">{predPax.toLocaleString()} pax</strong>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-slate-300">
+                  <span className="text-slate-400">Clear Baseline:</span>
+                  <span className="text-slate-300 font-semibold">{basePax.toLocaleString()} pax</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-slate-300">
+                  <span className="text-slate-400">Effective Seat Capacity:</span>
+                  <strong className="text-emerald-400 font-bold">{effCap.toLocaleString()} seats</strong>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono text-slate-300">
+                  <span className="text-slate-400">90% Conformal Interval:</span>
+                  <span className="text-blue-400 font-semibold">[{lowerPax} – {upperPax}] pax (±{intervalHalfWidth} pax)</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-slate-400 font-mono">Utilization:</span>
+                <span
+                  className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold ${
+                    curUtil > 100
+                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                      : curUtil > 90
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  }`}
+                >
+                  {curUtil}% {curUtil > 100 ? 'OVERCROWDED' : curUtil > 90 ? 'HIGH' : 'NORMAL'}
+                </span>
+              </div>
             </div>
           </div>
         )}
