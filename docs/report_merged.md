@@ -1,4 +1,4 @@
-# AI-16: AI Public Transport Overcrowding Predictor (TransitPulse)
+# ZeroCrowd (Track AI-16): AI Public Transport Overcrowding Predictor
 
 **Full Project Report: Requirements Cross-Check, Architecture, Mathematical Engine, Test Results, and Demo Specification**  
 ANVATION 2026 Hackathon · Prepared October 2026
@@ -9,7 +9,7 @@ ANVATION 2026 Hackathon · Prepared October 2026
 
 ## 1. Executive Summary
 
-**TransitPulse** is a decision-support command-center dashboard for urban transit operators. For each route and intraday time window, it forecasts passenger demand with a 90% normal prediction interval, quantifies overcrowding exceedance risk, dynamically flags demand spikes or fleet capacity losses, and dispatches spare vehicles using a multi-objective greedy fairness-aware allocation algorithm.
+**ZeroCrowd** is a decision-support command-center dashboard for urban transit operators. For each route and intraday time window, it forecasts passenger demand with a 90% normal prediction interval, quantifies overcrowding exceedance risk, dynamically flags demand spikes or fleet capacity losses, and dispatches spare vehicles using a multi-objective greedy fairness-aware allocation algorithm.
 
 ### Key Capabilities
 - **Deterministic Baseline & Measured Event Uplift:** Calculates clear-day averages and standard deviations, extracting data-driven multipliers for festivals and rainy weather without hardcoded inflation.
