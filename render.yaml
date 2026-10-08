@@ -1,15 +1,15 @@
 services:
   - type: web
     name: zerocrowd
-    runtime: docker
+    env: python
     plan: free
     region: oregon
     branch: main
-    dockerContext: .
-    dockerfilePath: ./Dockerfile
+    buildCommand: "cd frontend && npm install && npm run build && cd .. && rm -rf backend/static && cp -r frontend/dist backend/static && pip install -r backend/requirements.txt"
+    startCommand: "cd backend && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"
     envVars:
-      - key: PORT
-        value: 8000
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: PYTHONUNBUFFERED
         value: "1"
     healthCheckPath: /api/backtest
