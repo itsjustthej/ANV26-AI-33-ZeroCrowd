@@ -820,6 +820,16 @@ def commit_dispatch(req: AnalyzeReq):
     return analyze(req)
 
 
+@app.get("/api/health")
+def health():
+    return {
+        "status": "healthy",
+        "service": "ZeroCrowd Transit Intelligence Engine",
+        "version": "2.0.0",
+        "model": ML_MODELS.get("model_name", "HistGradientBoostingRegressor"),
+    }
+
+
 @app.get("/api/live-telemetry")
 def get_live_telemetry():
     try:
