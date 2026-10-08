@@ -61,23 +61,38 @@
 
 ---
 
-## 4. Local Setup & Run Instructions
+## 4. Deployment & Run Instructions
 
-### Start the FastAPI Backend
+### Option A: One-Command Docker Deployment (Recommended)
+```bash
+docker compose up -d --build
+```
+- **Frontend Command Center UI:** **http://localhost:5173** (also mapped to **http://localhost**)
+- **Backend API Docs (Swagger):** **http://localhost:8000/docs**
+
+To view logs or stop the containers:
+```bash
+docker compose logs -f
+docker compose down
+```
+
+### Option B: Local Development (Without Docker)
+
+#### 1. Start the FastAPI Backend
 ```bash
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
-Interactive Swagger documentation will be available at: **http://localhost:8000/docs**
+Interactive Swagger documentation: **http://localhost:8000/docs**
 
-### Start the React Frontend
+#### 2. Start the React Frontend
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
-Dashboard UI will be available at: **http://localhost:5173**
+Dashboard UI: **http://localhost:5173**
 
 ---
 
