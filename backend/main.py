@@ -363,6 +363,7 @@ class AnalyzeReq(BaseModel):
     hour: str = "08:00"
     spare: int = 5
     apply: bool = False
+    commit: bool = False
     tick_step: int = 0
     manual_alloc: Optional[Dict[str, int]] = None
 
@@ -400,7 +401,8 @@ def analyze(req: AnalyzeReq):
         for r in routes
     ]
 
-    display_rows = after_rows if req.apply else [
+    is_applied_or_committed = req.apply or req.commit
+    display_rows = after_rows if is_applied_or_committed else [
         {
             **b,
             "why": a["why"],
@@ -422,41 +424,55 @@ def analyze(req: AnalyzeReq):
         [s for s, active in [("spike", req.spike), ("capacity_loss", req.capacity_loss)] if active]
     ) or "normal"
 
-    if req.apply and sum(active_alloc.values()) > 0:
+    if (req.commit or req.apply) and sum(active_alloc.values()) > 0:
         conn = get_db()
         cur = conn.cursor()
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         prefix = "[HUMAN_OVERRIDE]" if is_manual else "[AI_DISPATCH]"
         for a in after_rows:
             if a["extra"] > 0:
-                cur.execute(
-                    """SELECT id, vehicles_added, reason FROM allocation_log
-                       WHERE scenario = ? AND hour = ? AND route_id = ?
-                       ORDER BY id DESC LIMIT 1""",
-                    (scenario_label, hour, a["id"]),
-                )
-                last_row = cur.fetchone()
                 reason_str = f"{prefix} {a['why']}"
-                if not last_row or last_row[1] != a["extra"] or not (last_row[2] and last_row[2].startswith(prefix)):
+                if req.commit:
                     cur.execute(
                         """INSERT INTO allocation_log
                            (ts, scenario, hour, route_id, vehicles_added, util_before, util_after, reason)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         (ts, scenario_label, hour, a["id"], a["extra"], before_map[a["id"]], a["utilization"], reason_str),
                     )
+                else:
+                    cur.execute(
+                        """SELECT id, vehicles_added, reason FROM allocation_log
+                           WHERE scenario = ? AND hour = ? AND route_id = ?
+                           ORDER BY id DESC LIMIT 1""",
+                        (scenario_label, hour, a["id"]),
+                    )
+                    last_row = cur.fetchone()
+                    if not last_row or last_row[1] != a["extra"] or not (last_row[2] and last_row[2].startswith(prefix)):
+                        cur.execute(
+                            """INSERT INTO allocation_log
+                               (ts, scenario, hour, route_id, vehicles_added, util_before, util_after, reason)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (ts, scenario_label, hour, a["id"], a["extra"], before_map[a["id"]], a["utilization"], reason_str),
+                        )
         conn.commit()
         conn.close()
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM allocation_log ORDER BY id DESC LIMIT 20")
+    logs = [dict(r) for r in cur.fetchall()]
+    conn.close()
 
     return {
         "scenario": scenario_label,
         "spike": req.spike,
         "capacity_loss": req.capacity_loss,
         "hour": hour,
-        "applied": req.apply,
+        "applied": is_applied_or_committed,
         "is_manual": is_manual,
         "spare_vehicles": req.spare,
         "spare_used": sum(active_alloc.values()),
-        "spare_left": req.spare - (sum(active_alloc.values()) if req.apply else 0),
+        "spare_left": req.spare - (sum(active_alloc.values()) if is_applied_or_committed else 0),
         "routes": display_rows,
         "recommendation": {k: v for k, v in rec.items() if v > 0},
         "active_alloc": {k: v for k, v in active_alloc.items() if v > 0},
@@ -465,7 +481,15 @@ def analyze(req: AnalyzeReq):
         "reduction_pct": reduction_pct,
         "method": "Historical hourly clear-day baseline + data-driven event multiplier + 90% normal interval (erf)",
         "label": "Simulated Demo Impact",
+        "logs": logs,
     }
+
+
+@app.post("/api/commit")
+def commit_dispatch(req: AnalyzeReq):
+    req.commit = True
+    req.apply = True
+    return analyze(req)
 
 
 @app.get("/api/intraday/{route_id}")
@@ -599,6 +623,7 @@ def run_backtest(hour: str = "08:00"):
 
 
 @app.get("/api/log")
+@app.get("/api/logs")
 def get_allocation_log():
     conn = get_db()
     cur = conn.cursor()

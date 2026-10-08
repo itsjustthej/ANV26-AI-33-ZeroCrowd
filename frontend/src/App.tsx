@@ -84,6 +84,7 @@ interface AnalyzeResponse {
   reduction_pct: number;
   method: string;
   label: string;
+  logs?: LogEntry[];
 }
 
 interface BacktestRoute {
@@ -190,11 +191,50 @@ export default function App() {
         );
       }
       setBacktest(btJson);
-      setLogs(logJson);
+      if (analyzeJson.logs && analyzeJson.logs.length > 0) {
+        setLogs(analyzeJson.logs);
+      } else {
+        setLogs(logJson);
+      }
       setLoading(false);
     } catch (err: any) {
       console.error('Backend sync error:', err);
       setErrorMsg('Failed to connect to backend engine at ' + API_BASE + '. Retrying...');
+    }
+  };
+
+  const handleApplyDispatch = async () => {
+    try {
+      setApplied(true);
+      const res = await fetch(`${API_BASE}/api/commit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          spike,
+          capacity_loss: capacityLoss,
+          hour,
+          spare,
+          apply: true,
+          commit: true,
+          tick_step: liveMode ? tickStep : 0,
+          manual_alloc: manualAlloc,
+        }),
+      });
+      if (res.ok) {
+        const analyzeJson = await res.json();
+        setData(analyzeJson);
+        if (analyzeJson.logs && analyzeJson.logs.length > 0) {
+          setLogs(analyzeJson.logs);
+        }
+      }
+      // Immediate fresh audit log fetch ensuring instant UI display
+      const resLog = await fetch(`${API_BASE}/api/log`);
+      if (resLog.ok) {
+        const freshLogs = await resLog.json();
+        setLogs(freshLogs);
+      }
+    } catch (err: any) {
+      console.error('Failed to commit dispatch:', err);
     }
   };
 
@@ -239,6 +279,7 @@ export default function App() {
     if (currentTotal < sparePoolSize) {
       baseMap[routeId] = (baseMap[routeId] || 0) + 1;
       setManualAlloc(baseMap);
+      setApplied(false);
     }
   };
 
@@ -247,6 +288,7 @@ export default function App() {
     if ((baseMap[routeId] || 0) > 0) {
       baseMap[routeId] = Math.max(0, (baseMap[routeId] || 0) - 1);
       setManualAlloc(baseMap);
+      setApplied(false);
     }
   };
 
@@ -259,6 +301,7 @@ export default function App() {
       if ((baseMap[targetRoute] || 0) > 0) {
         baseMap[targetRoute] = Math.max(0, (baseMap[targetRoute] || 0) - 1);
         setManualAlloc(baseMap);
+        setApplied(false);
       }
     } else {
       // Unit is currently on standby in depot -> Dispatch to selectedRoute
@@ -266,6 +309,7 @@ export default function App() {
       if (currentTotal < sparePoolSize) {
         baseMap[selectedRoute] = (baseMap[selectedRoute] || 0) + 1;
         setManualAlloc(baseMap);
+        setApplied(false);
       }
     }
   };
@@ -542,8 +586,8 @@ export default function App() {
           </div>
         )}
 
-        {/* Dynamic Alert Banner when Spike or Capacity Loss is active */}
-        {data && (spike || capacityLoss) && !applied && (
+        {/* Dynamic Alert Banner when Spike or Capacity Loss is active, or uncommitted manual override */}
+        {data && ((spike || capacityLoss) || data.before.overcrowded_routes > 0 || (manualAlloc !== null && totalDispatched > 0)) && !applied && (
           <div className="bg-gradient-to-r from-red-950/60 to-slate-900 border border-red-700/80 rounded-2xl p-5 shadow-xl flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div className="flex items-start gap-3.5">
               <div className="p-2 bg-red-600/20 text-red-400 rounded-xl border border-red-500/30 shrink-0 mt-0.5">
@@ -552,7 +596,9 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm font-bold text-red-200">
-                    ⚠ Overcrowding Anomaly Detected: Scenario [{data.scenario.toUpperCase()}]
+                    {manualAlloc !== null
+                      ? '⚠ Human Fleet Override Pending Commitment'
+                      : `⚠ Overcrowding Anomaly Detected: Scenario [${data.scenario.toUpperCase()}]`}
                   </h3>
                   <span className="text-[10px] px-2 py-0.2 bg-red-500/20 text-red-300 rounded font-semibold border border-red-500/30">
                     Action Required
@@ -571,10 +617,10 @@ export default function App() {
               </div>
             </div>
             <button
-              onClick={() => setApplied(true)}
+              onClick={handleApplyDispatch}
               className="px-5 py-2.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-extrabold shadow-lg shadow-red-600/30 whitespace-nowrap transition active:scale-95 flex items-center gap-1.5"
             >
-              <Sparkles className="w-4 h-4" /> APPLY ALLOCATION DISPATCH
+              <Sparkles className="w-4 h-4" /> {manualAlloc !== null ? 'COMMIT OVERRIDE DISPATCH' : 'APPLY ALLOCATION DISPATCH'}
             </button>
           </div>
         )}
@@ -671,15 +717,28 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Restore AI Recommendation Button */}
-              {manualAlloc !== null && (
-                <button
-                  onClick={() => setManualAlloc(null)}
-                  className="px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-amber-300 hover:text-white rounded-xl text-xs font-bold border border-amber-500/40 transition flex items-center gap-1.5 shadow-md active:scale-95"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" /> Restore AI Recommendation
-                </button>
-              )}
+              {/* Admin Actions */}
+              <div className="flex items-center gap-2">
+                {manualAlloc !== null && !applied && (
+                  <button
+                    onClick={handleApplyDispatch}
+                    className="px-3.5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold border border-amber-500 shadow-md shadow-amber-600/30 transition flex items-center gap-1.5 active:scale-95"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" /> Commit Override Dispatch
+                  </button>
+                )}
+                {manualAlloc !== null && (
+                  <button
+                    onClick={() => {
+                      setManualAlloc(null);
+                      setApplied(false);
+                    }}
+                    className="px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-amber-300 hover:text-white rounded-xl text-xs font-bold border border-amber-500/40 transition flex items-center gap-1.5 shadow-md active:scale-95"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" /> Restore AI Recommendation
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Individual Spare Fleet Unit Badges (Interactive: Click to Recall or Dispatch) */}
@@ -1191,7 +1250,13 @@ export default function App() {
 
               {/* Action Button */}
               <button
-                onClick={() => setApplied(!applied)}
+                onClick={() => {
+                  if (applied) {
+                    setApplied(false);
+                  } else {
+                    handleApplyDispatch();
+                  }
+                }}
                 disabled={totalDispatched === 0 && recEntries.length === 0}
                 className={`mt-4 w-full py-3 rounded-xl text-xs font-black uppercase tracking-wider transition ${
                   totalDispatched === 0 && recEntries.length === 0
