@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 app = FastAPI(title="ZeroCrowd: AI Public Transport Overcrowding Predictor (Track AI-16)")
@@ -617,6 +618,17 @@ def reset_log():
     return {"status": "reset"}
 
 
+# Serve built frontend static files if present (single-port deployment)
+static_dir = BASE_DIR / "static"
+frontend_dist = BASE_DIR.parent / "frontend" / "dist"
+
+if static_dir.exists() and static_dir.is_dir():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
+elif frontend_dist.exists() and frontend_dist.is_dir():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="static")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+

@@ -67,8 +67,8 @@
 ```bash
 docker compose up -d --build
 ```
-- **Frontend Command Center UI:** **http://localhost:5173** (also mapped to **http://localhost**)
-- **Backend API Docs (Swagger):** **http://localhost:8000/docs**
+- **Full-Stack Command Center UI & API:** **http://localhost:8000** (works universally from any host, IP, or cloud VM)
+- **Interactive Swagger API Docs:** **http://localhost:8000/docs**
 
 To view logs or stop the containers:
 ```bash

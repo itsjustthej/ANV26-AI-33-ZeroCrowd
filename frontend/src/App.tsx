@@ -32,7 +32,7 @@ import {
   YAxis,
 } from 'recharts';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '';
 const WINDOWS = ['06:00', '08:00', '10:00', '12:00', '14:00', '17:00', '19:00', '21:00'];
 
 interface RouteData {

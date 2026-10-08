@@ -1,9 +1,9 @@
 services:
-  backend:
+  zerocrowd:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
-    container_name: zerocrowd-backend
+    container_name: zerocrowd
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -15,16 +15,3 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: zerocrowd-frontend
-    restart: unless-stopped
-    ports:
-      - "5173:80"
-      - "80:80"
-    depends_on:
-      backend:
-        condition: service_healthy
