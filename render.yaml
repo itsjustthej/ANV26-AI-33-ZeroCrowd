@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: zerocrowd
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /api/backtest

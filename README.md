@@ -76,7 +76,20 @@ docker compose logs -f
 docker compose down
 ```
 
-### Option B: Local Development (Without Docker)
+### Option B: 1-Click Render Cloud Deployment
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/itsjustthej/CodeVanta)
+
+ZeroCrowd is pre-configured with a native Render Blueprint (`render.yaml`):
+1. Navigate to your [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** &rarr; **Blueprint** (or **New +** &rarr; **Web Service**).
+3. Select your GitHub repository: `https://github.com/itsjustthej/CodeVanta`.
+4. Render will automatically detect `render.yaml` and our multi-stage `Dockerfile`:
+   - **Runtime:** `Docker`
+   - **Health Check Path:** `/api/backtest`
+   - **Environment Variables:** `PORT=8000`, `PYTHONUNBUFFERED=1` (pre-configured)
+5. Click **Apply** or **Create Web Service**. Render builds and deploys your live ZeroCrowd URL in ~2 minutes!
+
+### Option C: Local Development (Without Docker)
 
 #### 1. Start the FastAPI Backend
 ```bash
